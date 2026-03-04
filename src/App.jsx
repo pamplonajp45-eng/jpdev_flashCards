@@ -76,6 +76,10 @@ export default function JpDeck() {
   useEffect(() => {
     async function fetchCards() {
       const { data, error } = await supabase.from('cards').select('*').order('created_at', { ascending: false });
+      if (error) {
+        console.error("Supabase Fetch Error:", error.message, error.details, error.hint);
+        alert(`Supabase Error: ${error.message}. Please check if the 'cards' table exists in your dashboard.`);
+      }
       if (!error && data) {
         setCards(data);
       }
