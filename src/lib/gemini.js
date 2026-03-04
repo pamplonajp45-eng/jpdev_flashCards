@@ -1,76 +1,101 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
 if (!apiKey) {
-    console.warn("⚠️ Missing Gemini API Key. AI features will not work.");
+    console.warn(" Missing Gemini API Key. AI features will not work.");
 } else {
-    console.log("✅ AI Key loaded:", apiKey.substring(0, 4) + "..." + apiKey.substring(apiKey.length - 4));
+    // We found the working models! gemini-2.5-flash is available.
+    console.log("🚀 jpDECK AI Active (REST Mode v2.1)");
 }
 
-const genAI = new GoogleGenerativeAI(apiKey || "");
+/**
+ * Direct fetch call to Gemini v1 REST API
+ */
+async function callGemini(model, prompt) {
+    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
 
-// Help debug: List all models available for THIS specific API key
-(async () => {
-    if (!apiKey) return;
-    try {
-        const models = await genAI.listModels();
-        console.log("📊 Available AI Models for your key:", models.models.map(m => m.name));
-    } catch (e) {
-        console.warn("Could not list models:", e.message);
+    const response = await fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            contents: [{
+                parts: [{
+                    text: prompt
+                }]
+            }]
+        })
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error?.message || `HTTP ${response.status}`);
     }
-})();
+
+    const data = await response.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+}
+
+export async function testAiConnection() {
+    if (!apiKey) return "Missing API Key";
+    try {
+        const text = await callGemini("gemini-2.0-flash", "Say hello in one word");
+        return `Success! AI responded: ${text.trim()}`;
+    } catch (e) {
+        return `AI Error: ${e.message}`;
+    }
+}
 
 async function tryModels(prompt) {
-    const modelNames = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro", "gemini-pro", "gemini-1.0-pro"];
+    // Using the exact names authorized for your API key
+    const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"];
     let lastError = null;
 
-    for (const name of modelNames) {
+    for (const modelName of models) {
         try {
-            console.log(`🤖 Trying AI model: ${name}...`);
-            const model = genAI.getGenerativeModel({ model: name });
-            const result = await model.generateContent(prompt);
-            const text = result.response.text().trim();
-            if (text) return text;
+            console.log(` Trying AI model: ${modelName}...`);
+            const result = await callGemini(modelName, prompt);
+            if (result) {
+                console.log(`✅ Success with ${modelName}`);
+                return result.trim();
+            }
         } catch (e) {
-            console.warn(`❌ Model ${name} failed:`, e.message);
+            console.warn(` ${modelName} failed:`, e.message);
             lastError = e;
+            if (!e.message.includes("404")) break;
         }
     }
-    throw lastError;
+    throw lastError || new Error("All authorized models failed");
 }
 
 export async function getJapaneseMeaning(word) {
     if (!word.trim()) return "";
 
-    const prompt = `Translate the following Japanese word or sentence to English. 
-  Provide a concise meaning, and if it's a kanji, include the furigana/reading in brackets.
-  Format: [Reading] Meaning
-  Word: "${word}"`;
+    const prompt = `Translate the Japanese word or sentence "${word}" to English. 
+    Provide the reading in brackets if it's Kanji. 
+    Format: [Reading] Meaning. 
+    Example for "食べる": [たべる] To eat.
+    Keep it very short.`;
 
     try {
         return await tryModels(prompt);
     } catch (error) {
-        console.error("Gemini AI Final Error:", error);
-        return `AI Error: ${error.message || "Failed to find a compatible model"}`;
+        console.error("AI Final Failure:", error);
+        return `AI Error: ${error.message}`;
     }
 }
 
 export async function processBulkAI(text) {
     if (!text.trim()) return [];
 
-    const prompt = `I have a list of Japanese words, one per line. 
-  For each word, provide its English translation and reading.
-  Format each result on a new line as: OriginalWord, [Reading] Meaning
-  Only return the list of words, no extra text.
-  
-  List:
-  ${text}`;
+    const prompt = `Translate this list of Japanese words to English. 
+    Format each line exactly as: Word, [Reading] Meaning
+    
+    List:
+    ${text}`;
 
     try {
         const responseText = await tryModels(prompt);
-
-        // Parse the response lines
         return responseText.split('\n')
             .map(line => {
                 const parts = line.split(',');
@@ -84,7 +109,7 @@ export async function processBulkAI(text) {
             })
             .filter(item => item !== null);
     } catch (error) {
-        console.error("Gemini Bulk AI Error:", error);
+        console.error("Bulk AI Error:", error);
         throw error;
     }
 }

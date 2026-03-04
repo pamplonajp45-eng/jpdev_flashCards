@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "./lib/supabase";
 import { getJapaneseMeaning, processBulkAI } from "./lib/gemini";
+import easySound from "./assets/when clicking easy.mp3";
+import finishSound from "./assets/when memorized all and finish studying.mp3";
+import resetSound from "./assets/when reset and study again clicked.mp3";
+import successIllu from "./assets/watercolor-chinese-style-illustration/7947569.jpg";
 
 function loadCardsLocal() {
   try {
@@ -81,6 +85,8 @@ export default function JpDeck() {
         alert(`Supabase Error: ${error.message}. Please check if the 'cards' table exists in your dashboard.`);
       }
       if (!error && data) {
+        console.log(" App Core Loaded: v2.1-stable (authenticated-jp)");
+        console.log(" Database Connected: Fetched", data.length, "cards");
         setCards(data);
       }
     }
@@ -95,6 +101,21 @@ export default function JpDeck() {
       setSessionDone(queue.length === 0);
     }
   }, [section]);
+
+  // Audio Playback logic
+  useEffect(() => {
+    if (sessionDone && section === "study" && cards.length > 0) {
+      const audio = new Audio(finishSound);
+      audio.volume = 0.6;
+      audio.play().catch(e => console.log("Audio play blocked:", e));
+    }
+  }, [sessionDone]);
+
+  const playSound = (src) => {
+    const audio = new Audio(src);
+    audio.volume = 0.5;
+    audio.play().catch(e => console.log("Audio play blocked:", e));
+  };
 
   async function addCard() {
     if (!front.trim() || !back.trim()) return;
@@ -143,6 +164,7 @@ export default function JpDeck() {
       const newQueue = studyQueue.filter((c) => c.id !== id);
       setStudyQueue(newQueue);
       setStudyIndex(0);
+      if (grade === "easy") playSound(easySound);
       if (newQueue.length === 0) setSessionDone(true);
     }
   }
@@ -158,9 +180,39 @@ export default function JpDeck() {
     setStudyQueue(reset);
     setStudyIndex(0);
     setSessionDone(false);
+    playSound(resetSound);
 
     // Reset practically un-grades everything; might be heavy for DB but okay for MVP
     await supabase.from('cards').update({ grade: null }).neq('grade', null);
+  }
+
+  const handleNuclearReset = async () => {
+    if (!window.confirm("This will clear all branding caches and restart the app. Continue?")) return;
+    if ('caches' in window) {
+      const names = await caches.keys();
+      await Promise.all(names.map(name => caches.delete(name)));
+    }
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(reg => reg.unregister()));
+    }
+    window.location.reload(true);
+  };
+
+  async function clearAllCards() {
+    if (!window.confirm("⚠️ ARE YOU SURE?\nThis will permanently delete ALL your cards. This cannot be undone.")) {
+      return;
+    }
+
+    // Use a filter that matches all UUIDs (e.g., id is not null)
+    const { error } = await supabase.from('cards').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+
+    if (error) {
+      alert("Error clearing deck: " + error.message);
+    } else {
+      setCards([]);
+      if (section === "study") setSection("add");
+    }
   }
 
   async function handleBulkAdd() {
@@ -238,10 +290,20 @@ export default function JpDeck() {
   return (
     <>
       <style>{CSS}</style>
+      <div className="app-bg">
+        <img src={successIllu} alt="" />
+      </div>
       <div className="app">
         <header className="header">
           <div className="logo">
-            jp<span>DECK</span>
+            <span id="brand-fix-check" className="logo-jp">JP</span>
+            <span className="logo-deck">DECK</span>
+            <button
+              onClick={handleNuclearReset}
+              style={{ fontSize: '8px', opacity: 0.1, marginLeft: '8px', background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'help' }}
+            >
+              (v2.1.6 • Force Sync)
+            </button>
           </div>
           <nav className="header-nav">
             <button
@@ -254,7 +316,7 @@ export default function JpDeck() {
               className={`nav-btn ${section === "study" ? "active" : ""}`}
               onClick={() => setSection("study")}
             >
-              📖 Study
+              Study
             </button>
           </nav>
         </header>
@@ -381,7 +443,17 @@ export default function JpDeck() {
                 </div>
               )}
 
-              <h2 className="section-title">Your Deck</h2>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h2 className="section-title" style={{ margin: 0 }}>Your Deck</h2>
+                {cards.length > 0 && (
+                  <button
+                    onClick={clearAllCards}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--hard)', cursor: 'pointer', fontSize: '12px', opacity: 0.7 }}
+                  >
+                    🗑️ Clear All
+                  </button>
+                )}
+              </div>
               {cards.length === 0 ? (
                 <p className="empty">No cards yet — add some above!</p>
               ) : (
@@ -447,14 +519,22 @@ export default function JpDeck() {
                 </>
               )}
               {cards.length > 0 && sessionDone && (
-                <div className="done-banner">
+                <div className="done-banner highlighted">
                   <h3 className="done-title">Don't forget to take breaks, CONGRATS!</h3>
                   <p className="done-sub">
                     {easyCount} of {cards.length} cards mastered
                   </p>
-                  <button className="add-btn reset-btn" onClick={resetGrades}>
-                    Reset &amp; Study Again
-                  </button>
+                  <div className="done-actions">
+                    <button className="add-btn medium-btn reset-btn" onClick={resetGrades}>
+                      Study Again
+                    </button>
+                    <button className="add-btn medium-btn rest-btn" onClick={() => setSection("add")}>
+                      Rest
+                    </button>
+                  </div>
+                  <p style={{ marginTop: '20px', fontSize: '10px', opacity: 0.3, color: 'var(--text)' }}>
+                    by-jpdev
+                  </p>
                 </div>
               )}
             </>
@@ -481,109 +561,109 @@ export default function JpDeck() {
 }
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800;900&family=Inter:wght@400;500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 :root{
-  --bg:#08080f;--surface:#0f0f1e;--surface2:#14142a;
-  --border:#1e1e3a;--accent:#6c5ce7;--accent2:#a29bfe;
-  --text:#e8e8f4;--muted:#5a5a7a;
-  --easy:#00b894;--medium:#fdcb6e;--hard:#e17055;
+  --bg:#0b0b14;--surface:#131325;--surface2:#1a1a35;
+  --border:#25254a;--accent:#a29bfe;--accent-glow:rgba(162,155,254,0.3);
+  --text:#f0f0f7;--muted:#7c7c9c;
+  --easy:#00d1a0;--medium:#ffcc66;--hard:#ff7675;
+  --font-brand: 'Syne', sans-serif;
+  --font-main: 'Inter', sans-serif;
 }
-body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100dvh;overflow-x:hidden;}
-.app{display:flex;flex-direction:column;min-height:100dvh;}
+body{background:var(--bg);color:var(--text);font-family:var(--font-main);min-height:100dvh;overflow-x:hidden;}
+.app{position:relative;display:flex;flex-direction:column;min-height:100dvh;z-index:1;}
+.app-bg{position:fixed;inset:0;z-index:0;opacity:0.25;pointer-events:none;background:var(--bg);}
+.app-bg img{width:100%;height:100%;object-fit:cover;mix-blend-mode:luminosity;filter:brightness(0.7);animation:slowZoom 30s infinite alternate ease-in-out;}
+@keyframes slowZoom{from{transform:scale(1);}to{transform:scale(1.15);}}
 
-/* HEADER */
-.header{position:sticky;top:0;z-index:100;background:rgba(8,8,15,0.88);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:60px;}
-.logo{font-family:'Syne',sans-serif;font-size:22px;font-weight:900;letter-spacing:-1px;}
-.logo span{color:var(--accent2);}
-.header-nav{display:flex;gap:8px;}
-.nav-btn{padding:8px 20px;border-radius:999px;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s;white-space:nowrap;}
-.nav-btn:hover{border-color:var(--accent);color:var(--accent2);}
-.nav-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+/* HEADER & LOGO */
+.header{position:sticky;top:0;z-index:100;background:rgba(11,11,20,0.85);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:70px;}
+.logo{display:flex;align-items:center;gap:4px;font-family:var(--font-brand);font-weight:900;font-size:26px;letter-spacing:-1px;}
+.logo-jp{background:#fff;color:#000;padding:0 8px;border-radius:6px;line-height:1;display:inline-block;font-family:var(--font-brand);font-weight:900;}
+.logo-deck{color:var(--accent);font-style:italic;transform:skewX(-5deg);display:inline-block;}
+
+.header-nav{display:flex;gap:12px;}
+.nav-btn{padding:10px 22px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-family:var(--font-brand);font-size:14px;font-weight:700;cursor:pointer;transition:all .25s ease;white-space:nowrap;}
+.nav-btn:hover{border-color:var(--accent);color:var(--accent);transform:translateY(-1px);}
+.nav-btn.active{background:var(--accent);border-color:var(--accent);color:#000;box-shadow:0 0 20px var(--accent-glow);}
 
 /* MAIN */
-.main{flex:1;max-width:720px;width:100%;margin:0 auto;padding:28px 20px 80px;animation:fadeUp .3s ease;}
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+.main{flex:1;max-width:800px;width:100%;margin:0 auto;padding:40px 20px 100px;animation:fadeUp .4s cubic-bezier(0.16, 1, 0.3, 1);}
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:none;}}
 
-.section-title{font-family:'Syne',sans-serif;font-size:19px;font-weight:800;margin-bottom:18px;}
+.section-title{font-family:var(--font-brand);font-size:24px;font-weight:800;margin-bottom:24px;letter-spacing:-0.5px;}
 
 /* FORM */
-.form{display:flex;flex-direction:column;gap:10px;margin-bottom:36px;}
-.inputs-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-input{width:100%;padding:13px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;outline:none;transition:border-color .2s;-webkit-appearance:none;}
-input:focus{border-color:var(--accent);}
-input::placeholder{color:var(--muted);}
-.add-btn{padding:13px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-family:'Syne',sans-serif;font-size:16px;font-weight:800;cursor:pointer;transition:opacity .2s,transform .1s;-webkit-tap-highlight-color:transparent;}
-.add-btn:active{opacity:.8;transform:scale(.98);}
-.reset-btn{display:block;max-width:260px;margin:0 auto;}
+.form{display:flex;flex-direction:column;gap:12px;margin-bottom:48px;background:var(--surface);padding:24px;border-radius:20px;border:1px solid var(--border);box-shadow:0 10px 30px rgba(0,0,0,0.2);}
+.inputs-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+input{width:100%;padding:16px 20px;background:var(--surface2);border:1px solid var(--border);border-radius:14px;color:var(--text);font-family:var(--font-main);font-size:16px;outline:none;transition:all .2s ease;}
+input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);}
+.add-btn{padding:16px;border-radius:14px;border:none;background:var(--accent);color:#000;font-family:var(--font-brand);font-size:18px;font-weight:800;cursor:pointer;transition:all .2s cubic-bezier(0.175, 0.885, 0.32, 1.275);}
+.add-btn:hover{transform:scale(1.02);filter:brightness(1.1);}
+.add-btn:active{transform:scale(0.97);}
 
 /* STATS */
-.stats-bar{display:flex;gap:10px;margin-bottom:28px;flex-wrap:wrap;}
-.stat{flex:1;min-width:72px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;text-align:center;}
-.stat-num{font-family:'Syne',sans-serif;font-size:22px;font-weight:900;}
-.stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-top:2px;}
+.stats-bar{display:grid;grid-template-columns:repeat(auto-fit, minmax(140px, 1fr));gap:12px;margin-bottom:40px;}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:20px;text-align:center;transition:transform .2s;}
+.stat:hover{transform:translateY(-4px);}
+.stat-num{font-family:var(--font-brand);font-size:28px;font-weight:900;line-height:1;}
+.stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;margin-top:8px;font-weight:700;}
 
 /* DECK LIST */
-.deck-list{display:flex;flex-direction:column;gap:8px;}
-.deck-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 16px;border-radius:10px;background:var(--surface);border:1px solid var(--border);}
-.deck-content{display:flex;align-items:center;gap:8px;min-width:0;flex:1;overflow:hidden;}
-.deck-front{font-weight:600;font-size:14px;white-space:nowrap;}
-.deck-arrow{color:var(--border);flex-shrink:0;font-size:12px;}
-.deck-back{color:var(--muted);font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.deck-right{display:flex;align-items:center;gap:6px;flex-shrink:0;}
-.grade-pill{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;text-transform:uppercase;letter-spacing:1px;}
-.grade-pill.easy{background:#00302a;color:var(--easy);}
-.grade-pill.medium{background:#302a00;color:var(--medium);}
-.grade-pill.hard{background:#301400;color:var(--hard);}
-.del-btn{background:transparent;border:none;color:var(--muted);font-size:15px;cursor:pointer;padding:4px 6px;border-radius:6px;transition:color .2s;-webkit-tap-highlight-color:transparent;}
-.del-btn:hover{color:var(--hard);}
-.empty{color:var(--muted);text-align:center;padding:50px 0;font-size:15px;}
+.deck-list{display:flex;flex-direction:column;gap:10px;}
+.deck-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-radius:16px;background:var(--surface);border:1px solid var(--border);transition:all .2s;}
+.deck-item:hover{border-color:var(--accent);background:var(--surface2);}
+.deck-content{display:flex;align-items:center;gap:12px;min-width:0;flex:1;}
+.deck-front{font-family:var(--font-brand);font-weight:800;font-size:16px;color:var(--text);}
+.deck-arrow{color:var(--muted);font-size:12px;}
+.deck-back{color:var(--accent);font-weight:500;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
-/* PROGRESS */
-.progress{margin-bottom:24px;}
-.progress-meta{display:flex;justify-content:space-between;margin-bottom:8px;}
-.progress-text{font-size:13px;color:var(--muted);}
-.progress-pct{font-family:'Syne',sans-serif;font-size:13px;font-weight:800;color:var(--accent2);}
-.progress-bar{height:5px;background:var(--border);border-radius:999px;overflow:hidden;}
-.progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:999px;transition:width .5s ease;}
-
-/* CARD */
-.card-wrapper{perspective:1200px;margin-bottom:20px;}
-.card{position:relative;width:100%;min-height:220px;transform-style:preserve-3d;transition:transform .5s cubic-bezier(.4,0,.2,1);cursor:pointer;border-radius:18px;-webkit-tap-highlight-color:transparent;user-select:none;}
+/* CARD & STUDY */
+.card-wrapper{perspective:1500px;margin-bottom:30px;}
+.card{position:relative;width:100%;min-height:300px;transform-style:preserve-3d;transition:transform .6s cubic-bezier(0.34, 1.56, 0.64, 1);cursor:pointer;}
 .card.flipped{transform:rotateY(180deg);}
-.card-face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;border-radius:18px;border:1px solid var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 28px;}
-.card-front{background:var(--surface);}
-.card-back{background:var(--surface2);transform:rotateY(180deg);}
-.card-face-label{position:absolute;top:16px;left:18px;font-size:10px;letter-spacing:2px;color:var(--muted);font-weight:600;text-transform:uppercase;}
-.card-text{font-family:'Syne',sans-serif;font-size:clamp(22px,6vw,38px);font-weight:800;text-align:center;line-height:1.2;}
-.card-hint{position:absolute;bottom:14px;right:18px;font-size:11px;color:var(--muted);}
+.card-face{position:absolute;inset:0;backface-visibility:hidden;border-radius:24px;border:2px solid var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;box-shadow:0 20px 50px rgba(0,0,0,0.3);}
+.card-face-label{position:absolute;top:20px;left:24px;font-size:10px;font-weight:800;letter-spacing:2px;color:var(--muted);opacity:0.5;}
+.card-hint{position:absolute;bottom:20px;font-size:12px;color:var(--muted);font-weight:600;opacity:0.6;}
+.card-front{background:linear-gradient(135deg, var(--surface), var(--surface2));}
+.card-back{background:var(--surface2);transform:rotateY(180deg);border-color:var(--accent);}
+.card-text{font-family:var(--font-brand);font-size:clamp(28px, 8vw, 48px);font-weight:900;text-align:center;line-height:1.1;letter-spacing:-1px;}
 
-/* GRADE */
-.grade-row{text-align:center;}
-.grade-label{font-size:13px;color:var(--muted);margin-bottom:12px;display:block;}
-.grade-btns{display:flex;gap:10px;justify-content:center;}
-.grade-btn{flex:1;max-width:140px;padding:12px 10px;border-radius:10px;border:none;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;cursor:pointer;transition:opacity .2s,transform .1s;-webkit-tap-highlight-color:transparent;}
-.grade-btn:active{opacity:.75;transform:scale(.96);}
-.grade-btn.easy{background:#00302a;color:var(--easy);}
-.grade-btn.medium{background:#302a00;color:var(--medium);}
-.grade-btn.hard{background:#301400;color:var(--hard);}
+.grade-row{margin-top:24px;animation:fadeUp .3s ease;}
+.grade-label{text-align:center;font-size:13px;color:var(--muted);margin-bottom:16px;font-weight:600;}
+.grade-btns{display:flex;gap:12px;}
+.grade-btn{flex:1;padding:16px;border-radius:16px;border:1px solid var(--border);background:var(--surface);font-family:var(--font-brand);font-size:16px;font-weight:800;cursor:pointer;transition:all .2s;}
+.grade-btn.easy{color:var(--easy);border-color:var(--easy);background:rgba(0,209,160,0.05);}
+.grade-btn.easy:hover{background:var(--easy);color:#000;}
+.grade-btn.medium{color:var(--medium);border-color:var(--medium);background:rgba(255,204,102,0.05);}
+.grade-btn.medium:hover{background:var(--medium);color:#000;}
+.grade-btn.hard{color:var(--hard);border-color:var(--hard);background:rgba(255,118,117,0.05);}
+.grade-btn.hard:hover{background:var(--hard);color:#000;}
 
-/* DONE */
-.done-banner{text-align:center;padding:60px 20px;}
-.done-emoji{font-size:64px;margin-bottom:16px;}
-.done-title{font-family:'Syne',sans-serif;font-size:20px;font-weight:900;margin-bottom:8px;}
-.done-sub{color:var(--muted);margin-bottom:28px;font-size:15px;}
+/* DONE SCREEN */
+.done-banner{position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;gap:16px;background:var(--surface);padding:60px 40px;border-radius:30px;border:1px solid var(--border);box-shadow:0 20px 50px rgba(0,0,0,0.3);overflow:hidden;}
+.done-banner.highlighted .done-title, .done-banner.highlighted .done-sub, .done-banner.highlighted .done-actions{position:relative;z-index:2;}
+.done-title{font-family:var(--font-brand);font-size:26px;font-weight:900;line-height:1.2;color:var(--text);text-shadow:0 2px 10px rgba(0,0,0,0.5);}
+.done-sub{color:var(--muted);font-weight:600;font-size:14px;letter-spacing:1px;text-transform:uppercase;text-shadow:0 2px 10px rgba(0,0,0,0.5);}
+.done-actions{display:flex;gap:12px;justify-content:center;width:100%;margin-top:8px;}
+.medium-btn{width:auto;min-width:160px;padding:14px 24px;font-size:16px;border-radius:14px;}
 
-.honesty-note{text-align:center;font-size:12px;color:var(--muted);margin-top:16px;}
+/* BOTTOM NAV */
+.bottom-nav{display:none;position:fixed;bottom:0;left:0;right:0;z-index:90;background:rgba(11,11,20,0.9);backdrop-filter:blur(20px);border-top:1px solid var(--border);padding:16px 16px 32px;gap:12px;}
 
-/* BOTTOM NAV — mobile only */
-.bottom-nav{display:none;position:fixed;bottom:0;left:0;right:0;z-index:100;background:rgba(8,8,15,.96);backdrop-filter:blur(18px);border-top:1px solid var(--border);padding:10px 16px 18px;gap:10px;}
-
-@media(max-width:560px){
+@media(max-width:600px){
   .bottom-nav{display:flex;}
   .header-nav{display:none;}
-  .main{padding-bottom:100px;}
-  .bottom-nav .nav-btn{flex:1;text-align:center;padding:12px 8px;font-size:15px;}
+  .main{padding-bottom:120px;}
   .inputs-row{grid-template-columns:1fr;}
+  .stat{padding:16px;}
 }
 `;
+
+// Inject CSS into the document head
+if (typeof document !== "undefined") {
+  const styleTag = document.createElement("style");
+  styleTag.textContent = CSS;
+  document.head.appendChild(styleTag);
+}
