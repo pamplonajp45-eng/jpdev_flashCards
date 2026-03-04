@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "./lib/supabase";
-import JSZip from "jszip";
-import initSqlJs from "sql.js";
+import { getJapaneseMeaning, processBulkAI } from "./lib/gemini";
 
 function loadCardsLocal() {
   try {
@@ -69,8 +68,9 @@ export default function JpDeck() {
   const [studyIndex, setStudyIndex] = useState(0);
   const [sessionDone, setSessionDone] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-
-  const fileInputRef = useRef(null);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [showBulkAdd, setShowBulkAdd] = useState(false);
+  const [bulkText, setBulkText] = useState("");
 
   // Load from Supabase on mount
   useEffect(() => {
@@ -110,6 +110,19 @@ export default function JpDeck() {
     }
   }
 
+  async function handleAiSuggest() {
+    if (!front.trim()) {
+      alert("Please enter Japanese text in the Front field first!");
+      return;
+    }
+    setIsAiLoading(true);
+    const suggestion = await getJapaneseMeaning(front);
+    if (suggestion) {
+      setBack(suggestion);
+    }
+    setIsAiLoading(false);
+  }
+
   async function handleGrade(id, grade) {
     setCards((prev) => prev.map((c) => (c.id === id ? { ...c, grade } : c)));
 
@@ -146,65 +159,71 @@ export default function JpDeck() {
     await supabase.from('cards').update({ grade: null }).neq('grade', null);
   }
 
-  async function handleImportAnki(e) {
-    const file = e.target.files[0];
-    if (!file) return;
+  async function handleBulkAdd() {
+    if (!bulkText.trim()) return;
+
+    const lines = bulkText.split('\n');
+    const newCards = [];
+
+    lines.forEach(line => {
+      // Split by comma or tab
+      const parts = line.split(/[,\t]/);
+      if (parts.length >= 2) {
+        newCards.push({
+          front: parts[0].trim(),
+          back: parts[1].trim(),
+          grade: null
+        });
+      }
+    });
+
+    if (newCards.length === 0) {
+      alert("No valid cards found. Use 'Front, Back' or 'Front [Tab] Back' format.");
+      return;
+    }
 
     setIsImporting(true);
+    const { data, error } = await supabase.from('cards').insert(newCards).select();
+    setIsImporting(false);
+
+    if (!error && data) {
+      setCards(prev => [...data, ...prev]);
+      setBulkText("");
+      setShowBulkAdd(false);
+      alert(`Imported ${newCards.length} cards!`);
+    } else {
+      alert("Error saving cards: " + (error?.message || "Unknown error"));
+    }
+  }
+
+  async function handleBulkAiAdd() {
+    if (!bulkText.trim()) {
+      alert("Please paste a list of Japanese words first!");
+      return;
+    }
+
+    setIsAiLoading(true);
     try {
-      const zip = new JSZip();
-      const zipContent = await zip.loadAsync(file);
-
-      let dbFile = zipContent.file("collection.anki2");
-      if (!dbFile) dbFile = zipContent.file("collection.anki21"); // Handles newer apkg versions
-      if (!dbFile) throw new Error("Could not find Anki database in file.");
-
-      const u8array = await dbFile.async("uint8array");
-
-      const SQL = await initSqlJs({
-        locateFile: file => `https://sql.js.org/dist/${file}`
-      });
-
-      const db = new SQL.Database(u8array);
-      const res = db.exec("SELECT flds FROM notes");
-
-      if (res.length > 0 && res[0].values) {
-        const importedCards = res[0].values.map(row => {
-          const fields = row[0].split('\\x1f');
-          // Anki uses raw 0x1F unit separator. Let's try matching both typical encodings
-          const parts = row[0].split(String.fromCharCode(31));
-
-          return {
-            front: parts[0] ? parts[0].trim() : "Unknown",
-            back: parts[1] ? parts[1].trim() : (parts[0] || "Unknown"), // fallback
-            grade: null
-          };
-        }).filter(c => c.front && c.back);
-
-        if (importedCards.length > 0) {
-          // Upload chunks to Supabase to avoid request payload limits
-          const chunkSize = 500;
-          const newCardsData = [];
-
-          for (let i = 0; i < importedCards.length; i += chunkSize) {
-            const chunk = importedCards.slice(i, i + chunkSize);
-            const { data, error } = await supabase.from('cards').insert(chunk).select();
-            if (!error && data) newCardsData.push(...data);
-          }
-
-          setCards(prev => [...newCardsData, ...prev]);
-          alert(`Successfully imported ${importedCards.length} cards from Anki!`);
-        } else {
-          alert("No Flashcards found inside this Anki deck format.");
-        }
+      const aiCards = await processBulkAI(bulkText);
+      if (aiCards.length === 0) {
+        alert("AI could not extract any cards from your text. Try a clearer list.");
+        return;
       }
-      db.close();
-    } catch (err) {
-      console.error(err);
-      alert("Error importing Anki deck: " + err.message);
+
+      const { data, error } = await supabase.from('cards').insert(aiCards).select();
+      if (!error && data) {
+        setCards(prev => [...data, ...prev]);
+        setBulkText("");
+        setShowBulkAdd(false);
+        alert(`AI successfully generated and imported ${aiCards.length} cards!`);
+      } else {
+        alert("Error saving AI cards: " + (error?.message || "Unknown error"));
+      }
+    } catch (e) {
+      console.error(e);
+      alert("AI Processing failed: " + (e.message || "Unknown error"));
     } finally {
-      setIsImporting(false);
-      if (fileInputRef.current) fileInputRef.current.value = ""; // Reset input
+      setIsAiLoading(false);
     }
   }
 
@@ -248,33 +267,87 @@ export default function JpDeck() {
                     onChange={(e) => setFront(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && addCard()}
                   />
-                  <input
-                    placeholder="Back (e.g. Hello)"
-                    value={back}
-                    onChange={(e) => setBack(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && addCard()}
-                  />
+                  <div style={{ position: 'relative', flex: 1 }}>
+                    <input
+                      placeholder="Back (e.g. Hello)"
+                      value={back}
+                      onChange={(e) => setBack(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && addCard()}
+                      style={{ paddingRight: '45px' }}
+                    />
+                    <button
+                      onClick={handleAiSuggest}
+                      disabled={isAiLoading}
+                      title="AI Smart Fill"
+                      style={{
+                        position: 'absolute',
+                        right: '8px',
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        background: 'transparent',
+                        border: 'none',
+                        fontSize: '18px',
+                        cursor: 'pointer',
+                        opacity: isAiLoading ? 0.5 : 1,
+                        padding: '4px'
+                      }}
+                    >
+                      {isAiLoading ? '⌛' : '✨'}
+                    </button>
+                  </div>
                 </div>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button className="add-btn" onClick={addCard} style={{ flex: 1 }}>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button className="add-btn" onClick={addCard} style={{ flex: '1 1 120px' }}>
                     Add Card
                   </button>
                   <button
-                    className="add-btn"
-                    onClick={() => fileInputRef.current?.click()}
-                    style={{ background: 'var(--surface2)', border: '1px solid var(--border)', flex: 1 }}
-                    disabled={isImporting}
+                    className={`nav-btn ${showBulkAdd ? "active" : ""}`}
+                    onClick={() => setShowBulkAdd(!showBulkAdd)}
+                    style={{ background: 'var(--surface2)', border: '1px solid var(--border)', flex: '1 1 120px', borderRadius: '10px', color: 'var(--text)' }}
                   >
-                    {isImporting ? "Importing..." : "📥 Import Anki (.apkg)"}
+                    📝 Bulk Import
                   </button>
-                  <input
-                    type="file"
-                    accept=".apkg"
-                    style={{ display: 'none' }}
-                    ref={fileInputRef}
-                    onChange={handleImportAnki}
-                  />
                 </div>
+
+                {showBulkAdd && (
+                  <div className="bulk-add" style={{ marginTop: '16px', animation: 'fadeUp .2s' }}>
+                    <textarea
+                      placeholder="Paste cards here:&#10;こんにちは, Hello&#10;さようなら, Goodbye&#10;(One card per line, use comma or tab)"
+                      value={bulkText}
+                      onChange={(e) => setBulkText(e.target.value)}
+                      style={{
+                        width: '100%',
+                        height: '150px',
+                        background: 'var(--surface2)',
+                        border: '1px solid var(--border)',
+                        borderRadius: '10px',
+                        padding: '12px',
+                        color: 'var(--text)',
+                        fontFamily: 'inherit',
+                        fontSize: '14px',
+                        resize: 'vertical'
+                      }}
+                    />
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                      <button
+                        className="add-btn"
+                        onClick={handleBulkAdd}
+                        disabled={isImporting || isAiLoading}
+                        style={{ flex: 1 }}
+                      >
+                        Process List
+                      </button>
+                      <button
+                        className="add-btn"
+                        onClick={handleBulkAiAdd}
+                        disabled={isImporting || isAiLoading}
+                        style={{ flex: 1, background: 'var(--surface)', border: '1px solid var(--accent)' }}
+                      >
+                        {isAiLoading ? "AI is Thinking..." : "✨ AI Auto-fill All"}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {cards.length > 0 && (
