@@ -1,45 +1,58 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { supabase } from "./lib/supabase";
+import JSZip from "jszip";
+import initSqlJs from "sql.js";
 
-const STORAGE_KEY = "jpdeck_cards";
-
-function loadCards() {
+function loadCardsLocal() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+    return JSON.parse(localStorage.getItem("jpdeck_cards")) || [];
   } catch {
     return [];
   }
 }
 
-function saveCards(cards) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(cards));
-}
-
-// A single flashcard: front/back, flipped state, grade button actions
 function Flashcard({ card, onGrade }) {
   const [flipped, setFlipped] = useState(false);
-
   return (
-    <div style={styles.cardWrapper}>
+    <div className="card-wrapper">
       <div
+        className={`card ${flipped ? "flipped" : ""}`}
         onClick={() => setFlipped((f) => !f)}
-        style={{
-          ...styles.card,
-          background: flipped ? "#1a1a2e" : "#16213e",
-          cursor: "pointer",
-        }}
       >
-        <span style={styles.cardLabel}>{flipped ? "BACK" : "FRONT"}</span>
-        <p style={styles.cardText}>{flipped ? card.back : card.front}</p>
-        <span style={styles.flipHint}>{flipped ? "click to flip back" : "click to reveal answer"}</span>
+        <div className="card-face card-front">
+          <span className="card-face-label">FRONT</span>
+          <p className="card-text">{card.front}</p>
+          <span className="card-hint">tap to reveal ↓</span>
+        </div>
+        <div className="card-face card-back">
+          <span className="card-face-label">BACK</span>
+          <p className="card-text">{card.back}</p>
+          <span className="card-hint">tap to flip back ↑</span>
+        </div>
       </div>
 
       {flipped && (
-        <div style={styles.gradeRow}>
-          <span style={styles.gradeLabel}>How did you do?</span>
-          <div style={styles.gradeBtns}>
-            <button style={{ ...styles.gradeBtn, ...styles.easy }} onClick={() => onGrade(card.id, "easy")}>✅ Easy</button>
-            <button style={{ ...styles.gradeBtn, ...styles.medium }} onClick={() => onGrade(card.id, "medium")}>🟡 Medium</button>
-            <button style={{ ...styles.gradeBtn, ...styles.hard }} onClick={() => onGrade(card.id, "hard")}>🔴 Hard</button>
+        <div className="grade-row">
+          <p className="grade-label">Be honest — how did you do?</p>
+          <div className="grade-btns">
+            <button
+              className="grade-btn easy"
+              onClick={() => onGrade(card.id, "easy")}
+            >
+              ✅ Easy
+            </button>
+            <button
+              className="grade-btn medium"
+              onClick={() => onGrade(card.id, "medium")}
+            >
+              🟡 Medium
+            </button>
+            <button
+              className="grade-btn hard"
+              onClick={() => onGrade(card.id, "hard")}
+            >
+              🔴 Hard
+            </button>
           </div>
         </div>
       )}
@@ -48,19 +61,28 @@ function Flashcard({ card, onGrade }) {
 }
 
 export default function JpDeck() {
-  const [cards, setCards] = useState(loadCards);
-  const [section, setSection] = useState("add"); // "add" | "study"
+  const [cards, setCards] = useState(loadCardsLocal);
+  const [section, setSection] = useState("add");
   const [front, setFront] = useState("");
   const [back, setBack] = useState("");
-
-  // Study session state
   const [studyQueue, setStudyQueue] = useState([]);
   const [studyIndex, setStudyIndex] = useState(0);
   const [sessionDone, setSessionDone] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
 
-  useEffect(() => saveCards(cards), [cards]);
+  const fileInputRef = useRef(null);
 
-  // Build study queue when entering study section
+  // Load from Supabase on mount
+  useEffect(() => {
+    async function fetchCards() {
+      const { data, error } = await supabase.from('cards').select('*').order('created_at', { ascending: false });
+      if (!error && data) {
+        setCards(data);
+      }
+    }
+    fetchCards();
+  }, []);
+
   useEffect(() => {
     if (section === "study") {
       const queue = cards.filter((c) => c.grade !== "easy");
@@ -70,26 +92,30 @@ export default function JpDeck() {
     }
   }, [section]);
 
-  function addCard() {
+  async function addCard() {
     if (!front.trim() || !back.trim()) return;
-    const newCard = {
-      id: Date.now(),
-      front: front.trim(),
-      back: back.trim(),
-      grade: null, // null | "easy" | "medium" | "hard"
-    };
-    setCards((prev) => [...prev, newCard]);
+
+    const newCard = { front: front.trim(), back: back.trim(), grade: null };
+
+    // Optimistic UI update
+    const tempId = Date.now();
+    setCards((prev) => [{ ...newCard, id: tempId }, ...prev]);
     setFront("");
     setBack("");
+
+    const { data, error } = await supabase.from('cards').insert([newCard]).select();
+    if (!error && data) {
+      // Swap temp ID with real DB UUID
+      setCards((prev) => prev.map(c => c.id === tempId ? data[0] : c));
+    }
   }
 
-  function handleGrade(id, grade) {
-    // Update the card's grade in persistent storage
-    setCards((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, grade } : c))
-    );
+  async function handleGrade(id, grade) {
+    setCards((prev) => prev.map((c) => (c.id === id ? { ...c, grade } : c)));
 
-    // If hard/medium, push card to end of queue so it repeats
+    // Update DB async
+    supabase.from('cards').update({ grade }).eq('id', id).then();
+
     if (grade === "hard" || grade === "medium") {
       const card = studyQueue[studyIndex];
       const newQueue = [...studyQueue.slice(studyIndex + 1), card];
@@ -97,407 +123,390 @@ export default function JpDeck() {
       setStudyIndex(0);
       if (newQueue.length === 0) setSessionDone(true);
     } else {
-      // easy — remove from queue
       const newQueue = studyQueue.filter((c) => c.id !== id);
-      if (newQueue.length === 0) {
-        setSessionDone(true);
-      } else {
-        setStudyIndex((i) => Math.min(i, newQueue.length - 1));
-        setStudyQueue(newQueue);
-      }
+      setStudyQueue(newQueue);
+      setStudyIndex(0);
+      if (newQueue.length === 0) setSessionDone(true);
     }
   }
 
-  function deleteCard(id) {
+  async function deleteCard(id) {
     setCards((prev) => prev.filter((c) => c.id !== id));
+    await supabase.from('cards').delete().eq('id', id);
   }
 
-  function resetGrades() {
-    setCards((prev) => prev.map((c) => ({ ...c, grade: null })));
-    setSessionDone(false);
-    const queue = cards.map((c) => ({ ...c, grade: null }));
-    setStudyQueue(queue);
+  async function resetGrades() {
+    const reset = cards.map((c) => ({ ...c, grade: null }));
+    setCards(reset);
+    setStudyQueue(reset);
     setStudyIndex(0);
+    setSessionDone(false);
+
+    // Reset practically un-grades everything; might be heavy for DB but okay for MVP
+    await supabase.from('cards').update({ grade: null }).neq('grade', null);
+  }
+
+  async function handleImportAnki(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setIsImporting(true);
+    try {
+      const zip = new JSZip();
+      const zipContent = await zip.loadAsync(file);
+
+      let dbFile = zipContent.file("collection.anki2");
+      if (!dbFile) dbFile = zipContent.file("collection.anki21"); // Handles newer apkg versions
+      if (!dbFile) throw new Error("Could not find Anki database in file.");
+
+      const u8array = await dbFile.async("uint8array");
+
+      const SQL = await initSqlJs({
+        locateFile: file => `https://sql.js.org/dist/${file}`
+      });
+
+      const db = new SQL.Database(u8array);
+      const res = db.exec("SELECT flds FROM notes");
+
+      if (res.length > 0 && res[0].values) {
+        const importedCards = res[0].values.map(row => {
+          const fields = row[0].split('\\x1f');
+          // Anki uses raw 0x1F unit separator. Let's try matching both typical encodings
+          const parts = row[0].split(String.fromCharCode(31));
+
+          return {
+            front: parts[0] ? parts[0].trim() : "Unknown",
+            back: parts[1] ? parts[1].trim() : (parts[0] || "Unknown"), // fallback
+            grade: null
+          };
+        }).filter(c => c.front && c.back);
+
+        if (importedCards.length > 0) {
+          // Upload chunks to Supabase to avoid request payload limits
+          const chunkSize = 500;
+          const newCardsData = [];
+
+          for (let i = 0; i < importedCards.length; i += chunkSize) {
+            const chunk = importedCards.slice(i, i + chunkSize);
+            const { data, error } = await supabase.from('cards').insert(chunk).select();
+            if (!error && data) newCardsData.push(...data);
+          }
+
+          setCards(prev => [...newCardsData, ...prev]);
+          alert(`Successfully imported ${importedCards.length} cards from Anki!`);
+        } else {
+          alert("No Flashcards found inside this Anki deck format.");
+        }
+      }
+      db.close();
+    } catch (err) {
+      console.error(err);
+      alert("Error importing Anki deck: " + err.message);
+    } finally {
+      setIsImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = ""; // Reset input
+    }
   }
 
   const currentCard = studyQueue[studyIndex];
   const easyCount = cards.filter((c) => c.grade === "easy").length;
+  const pct = cards.length ? Math.round((easyCount / cards.length) * 100) : 0;
 
   return (
-    <div style={styles.root}>
-      {/* Header */}
-      <header style={styles.header}>
-        <h1 style={styles.title}>jp<span style={styles.accent}>DECK</span></h1>
-        <p style={styles.subtitle}>FLASHCARDS</p>
-        <nav style={styles.nav}>
+    <>
+      <style>{CSS}</style>
+      <div className="app">
+        <header className="header">
+          <div className="logo">
+            jp<span>DECK</span>
+          </div>
+          <nav className="header-nav">
+            <button
+              className={`nav-btn ${section === "add" ? "active" : ""}`}
+              onClick={() => setSection("add")}
+            >
+              ＋ Add Cards
+            </button>
+            <button
+              className={`nav-btn ${section === "study" ? "active" : ""}`}
+              onClick={() => setSection("study")}
+            >
+              📖 Study
+            </button>
+          </nav>
+        </header>
+
+        <main className="main">
+          {section === "add" && (
+            <>
+              <h2 className="section-title">Add a Card</h2>
+              <div className="form">
+                <div className="inputs-row">
+                  <input
+                    placeholder="Front (e.g. こんにちは)"
+                    value={front}
+                    onChange={(e) => setFront(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && addCard()}
+                  />
+                  <input
+                    placeholder="Back (e.g. Hello)"
+                    value={back}
+                    onChange={(e) => setBack(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && addCard()}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button className="add-btn" onClick={addCard} style={{ flex: 1 }}>
+                    Add Card
+                  </button>
+                  <button
+                    className="add-btn"
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{ background: 'var(--surface2)', border: '1px solid var(--border)', flex: 1 }}
+                    disabled={isImporting}
+                  >
+                    {isImporting ? "Importing..." : "📥 Import Anki (.apkg)"}
+                  </button>
+                  <input
+                    type="file"
+                    accept=".apkg"
+                    style={{ display: 'none' }}
+                    ref={fileInputRef}
+                    onChange={handleImportAnki}
+                  />
+                </div>
+              </div>
+
+              {cards.length > 0 && (
+                <div className="stats-bar">
+                  <div className="stat">
+                    <div className="stat-num">{cards.length}</div>
+                    <div className="stat-label">Total</div>
+                  </div>
+                  <div className="stat">
+                    <div className="stat-num" style={{ color: "var(--easy)" }}>
+                      {easyCount}
+                    </div>
+                    <div className="stat-label">Mastered</div>
+                  </div>
+                  <div className="stat">
+                    <div className="stat-num" style={{ color: "var(--hard)" }}>
+                      {cards.filter((c) => c.grade === "hard").length}
+                    </div>
+                    <div className="stat-label">Hard</div>
+                  </div>
+                  <div className="stat">
+                    <div className="stat-num">
+                      {cards.filter((c) => !c.grade).length}
+                    </div>
+                    <div className="stat-label">New</div>
+                  </div>
+                </div>
+              )}
+
+              <h2 className="section-title">Your Deck</h2>
+              {cards.length === 0 ? (
+                <p className="empty">No cards yet — add some above!</p>
+              ) : (
+                <div className="deck-list">
+                  {cards.map((c) => (
+                    <div key={c.id} className="deck-item">
+                      <div className="deck-content">
+                        <span className="deck-front">{c.front}</span>
+                        <span className="deck-arrow">→</span>
+                        <span className="deck-back">{c.back}</span>
+                      </div>
+                      <div className="deck-right">
+                        {c.grade && (
+                          <span className={`grade-pill ${c.grade}`}>
+                            {c.grade}
+                          </span>
+                        )}
+                        <button
+                          className="del-btn"
+                          onClick={() => deleteCard(c.id)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {section === "study" && (
+            <>
+              <h2 className="section-title">Study Session</h2>
+              {cards.length === 0 && (
+                <p className="empty">No cards yet — go add some first!</p>
+              )}
+              {cards.length > 0 && !sessionDone && currentCard && (
+                <>
+                  <div className="progress">
+                    <div className="progress-meta">
+                      <span className="progress-text">
+                        {studyQueue.length} remaining · {easyCount} mastered
+                      </span>
+                      <span className="progress-pct">{pct}%</span>
+                    </div>
+                    <div className="progress-bar">
+                      <div
+                        className="progress-fill"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <Flashcard
+                    key={currentCard.id + "-" + studyIndex}
+                    card={currentCard}
+                    onGrade={handleGrade}
+                  />
+                  <p className="honesty-note">
+                    Be honest — your grades shape how often cards repeat 🙏
+                  </p>
+                </>
+              )}
+              {cards.length > 0 && sessionDone && (
+                <div className="done-banner">
+                  <h3 className="done-title">Don't forget to take breaks, CONGRATS!</h3>
+                  <p className="done-sub">
+                    {easyCount} of {cards.length} cards mastered
+                  </p>
+                  <button className="add-btn reset-btn" onClick={resetGrades}>
+                    Reset &amp; Study Again
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </main>
+
+        <nav className="bottom-nav">
           <button
+            className={`nav-btn ${section === "add" ? "active" : ""}`}
             onClick={() => setSection("add")}
-            style={{ ...styles.navBtn, ...(section === "add" ? styles.navActive : {}) }}
           >
-            ＋ Add Cards
+            ＋ Add
           </button>
           <button
+            className={`nav-btn ${section === "study" ? "active" : ""}`}
             onClick={() => setSection("study")}
-            style={{ ...styles.navBtn, ...(section === "study" ? styles.navActive : {}) }}
           >
             📖 Study
           </button>
         </nav>
-      </header>
-
-      {/* ADD SECTION */}
-      {section === "add" && (
-        <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>Add a New Card</h2>
-          <div style={styles.form}>
-            <input
-              style={styles.input}
-              placeholder="Front (e.g. こんにちは)"
-              value={front}
-              onChange={(e) => setFront(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addCard()}
-            />
-            <input
-              style={styles.input}
-              placeholder="Back (e.g. Hello)"
-              value={back}
-              onChange={(e) => setBack(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addCard()}
-            />
-            <button style={styles.addBtn} onClick={addCard}>Add Card</button>
-          </div>
-
-          <h2 style={{ ...styles.sectionTitle, marginTop: 40 }}>
-            Your Deck ({cards.length} cards)
-          </h2>
-          {cards.length === 0 && (
-            <p style={styles.empty}>No cards yet. Add some above!</p>
-          )}
-          <div style={styles.deckList}>
-            {cards.map((c) => (
-              <div key={c.id} style={styles.deckItem}>
-                <div style={styles.deckItemContent}>
-                  <span style={styles.deckFront}>{c.front}</span>
-                  <span style={styles.deckArrow}>→</span>
-                  <span style={styles.deckBack}>{c.back}</span>
-                </div>
-                <div style={styles.deckItemRight}>
-                  {c.grade && (
-                    <span style={{
-                      ...styles.gradePill,
-                      background: c.grade === "easy" ? "#1a3a2a" : c.grade === "hard" ? "#3a1a1a" : "#3a3a1a",
-                      color: c.grade === "easy" ? "#4caf50" : c.grade === "hard" ? "#f44336" : "#ffeb3b",
-                    }}>
-                      {c.grade}
-                    </span>
-                  )}
-                  <button style={styles.deleteBtn} onClick={() => deleteCard(c.id)}>✕</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* STUDY SECTION */}
-      {section === "study" && (
-        <div style={styles.section}>
-          <h2 style={styles.sectionTitle}>Study Session</h2>
-
-          {cards.length === 0 && (
-            <p style={styles.empty}>No cards in your deck. Go add some first!</p>
-          )}
-
-          {cards.length > 0 && sessionDone && (
-            <div style={styles.doneBanner}>
-              <div style={styles.doneEmoji}>🎉</div>
-              <h3 style={styles.doneTitle}>All done!</h3>
-              <p style={styles.doneSub}>
-                {easyCount} of {cards.length} cards marked easy.
-              </p>
-              <button style={styles.addBtn} onClick={resetGrades}>
-                Reset & Study Again
-              </button>
-            </div>
-          )}
-
-          {cards.length > 0 && !sessionDone && currentCard && (
-            <>
-              <div style={styles.progress}>
-                <span style={styles.progressText}>
-                  {studyQueue.length} card{studyQueue.length !== 1 ? "s" : ""} remaining • {easyCount} mastered
-                </span>
-                <div style={styles.progressBar}>
-                  <div
-                    style={{
-                      ...styles.progressFill,
-                      width: `${(easyCount / cards.length) * 100}%`,
-                    }}
-                  />
-                </div>
-              </div>
-              <Flashcard key={currentCard.id + studyIndex} card={currentCard} onGrade={handleGrade} />
-              <p style={styles.honesty}>
-                Be honest — your grades shape how often cards repeat 🙏
-              </p>
-            </>
-          )}
-        </div>
-      )}
-    </div>
+      </div>
+    </>
   );
 }
 
-const styles = {
-  root: {
-    minHeight: "100vh",
-    background: "#0d0d1a",
-    color: "#e0e0f0",
-    fontFamily: "'Segoe UI', sans-serif",
-    padding: "0 0 60px",
-  },
-  header: {
-    textAlign: "center",
-    padding: "40px 20px 20px",
-    borderBottom: "1px solid #1e1e3a",
-    marginBottom: 32,
-  },
-  title: {
-    fontSize: 42,
-    fontWeight: 900,
-    margin: 0,
-    letterSpacing: "-1px",
-    color: "#e0e0f0",
-  },
-  accent: {
-    color: "#7c6af7",
-  },
-  subtitle: {
-    margin: "6px 0 24px",
-    color: "#666",
-    fontSize: 14,
-    letterSpacing: 2,
-    textTransform: "uppercase",
-  },
-  nav: {
-    display: "flex",
-    gap: 12,
-    justifyContent: "center",
-  },
-  navBtn: {
-    padding: "10px 28px",
-    borderRadius: 8,
-    border: "1px solid #2a2a4a",
-    background: "transparent",
-    color: "#888",
-    cursor: "pointer",
-    fontSize: 15,
-    fontWeight: 600,
-    transition: "all 0.2s",
-  },
-  navActive: {
-    background: "#7c6af7",
-    borderColor: "#7c6af7",
-    color: "#fff",
-  },
-  section: {
-    maxWidth: 620,
-    margin: "0 auto",
-    padding: "0 20px",
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: 700,
-    marginBottom: 20,
-    color: "#c0c0e0",
-  },
-  form: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-  },
-  input: {
-    padding: "14px 16px",
-    borderRadius: 8,
-    border: "1px solid #2a2a4a",
-    background: "#13132a",
-    color: "#e0e0f0",
-    fontSize: 16,
-    outline: "none",
-  },
-  addBtn: {
-    padding: "14px",
-    borderRadius: 8,
-    border: "none",
-    background: "#7c6af7",
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: 700,
-    cursor: "pointer",
-  },
-  deckList: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 10,
-  },
-  deckItem: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "12px 16px",
-    background: "#13132a",
-    borderRadius: 8,
-    border: "1px solid #1e1e3a",
-  },
-  deckItemContent: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    flex: 1,
-    minWidth: 0,
-  },
-  deckFront: {
-    fontWeight: 600,
-    color: "#e0e0f0",
-    fontSize: 15,
-  },
-  deckArrow: {
-    color: "#444",
-  },
-  deckBack: {
-    color: "#888",
-    fontSize: 15,
-  },
-  deckItemRight: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-  },
-  gradePill: {
-    fontSize: 11,
-    fontWeight: 700,
-    padding: "3px 8px",
-    borderRadius: 20,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  deleteBtn: {
-    background: "transparent",
-    border: "none",
-    color: "#555",
-    cursor: "pointer",
-    fontSize: 16,
-    padding: "2px 6px",
-  },
-  empty: {
-    color: "#555",
-    textAlign: "center",
-    padding: "40px 0",
-  },
-  cardWrapper: {
-    marginBottom: 20,
-  },
-  card: {
-    borderRadius: 16,
-    border: "1px solid #2a2a4a",
-    padding: "50px 30px",
-    textAlign: "center",
-    position: "relative",
-    userSelect: "none",
-    transition: "background 0.3s",
-  },
-  cardLabel: {
-    position: "absolute",
-    top: 16,
-    left: 20,
-    fontSize: 11,
-    letterSpacing: 2,
-    color: "#444",
-    textTransform: "uppercase",
-  },
-  cardText: {
-    fontSize: 32,
-    fontWeight: 700,
-    margin: 0,
-    color: "#e0e0f0",
-  },
-  flipHint: {
-    position: "absolute",
-    bottom: 16,
-    right: 20,
-    fontSize: 11,
-    color: "#444",
-    letterSpacing: 1,
-  },
-  gradeRow: {
-    marginTop: 16,
-    textAlign: "center",
-  },
-  gradeLabel: {
-    display: "block",
-    color: "#666",
-    fontSize: 13,
-    marginBottom: 10,
-  },
-  gradeBtns: {
-    display: "flex",
-    gap: 12,
-    justifyContent: "center",
-  },
-  gradeBtn: {
-    padding: "10px 22px",
-    borderRadius: 8,
-    border: "none",
-    cursor: "pointer",
-    fontSize: 15,
-    fontWeight: 700,
-  },
-  easy: { background: "#1a3a2a", color: "#4caf50" },
-  medium: { background: "#3a3a1a", color: "#ffeb3b" },
-  hard: { background: "#3a1a1a", color: "#f44336" },
-  progress: {
-    marginBottom: 24,
-  },
-  progressText: {
-    fontSize: 13,
-    color: "#666",
-    display: "block",
-    marginBottom: 8,
-  },
-  progressBar: {
-    height: 4,
-    background: "#1e1e3a",
-    borderRadius: 99,
-    overflow: "hidden",
-  },
-  progressFill: {
-    height: "100%",
-    background: "#7c6af7",
-    borderRadius: 99,
-    transition: "width 0.4s ease",
-  },
-  honesty: {
-    textAlign: "center",
-    fontSize: 13,
-    color: "#444",
-    marginTop: 20,
-  },
-  doneBanner: {
-    textAlign: "center",
-    padding: "60px 20px",
-  },
-  doneEmoji: {
-    fontSize: 60,
-    marginBottom: 16,
-  },
-  doneTitle: {
-    fontSize: 28,
-    fontWeight: 800,
-    color: "#e0e0f0",
-    margin: "0 0 8px",
-  },
-  doneSub: {
-    color: "#666",
-    marginBottom: 28,
-  },
-};
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800;900&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --bg:#08080f;--surface:#0f0f1e;--surface2:#14142a;
+  --border:#1e1e3a;--accent:#6c5ce7;--accent2:#a29bfe;
+  --text:#e8e8f4;--muted:#5a5a7a;
+  --easy:#00b894;--medium:#fdcb6e;--hard:#e17055;
+}
+body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100dvh;overflow-x:hidden;}
+.app{display:flex;flex-direction:column;min-height:100dvh;}
+
+/* HEADER */
+.header{position:sticky;top:0;z-index:100;background:rgba(8,8,15,0.88);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:60px;}
+.logo{font-family:'Syne',sans-serif;font-size:22px;font-weight:900;letter-spacing:-1px;}
+.logo span{color:var(--accent2);}
+.header-nav{display:flex;gap:8px;}
+.nav-btn{padding:8px 20px;border-radius:999px;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s;white-space:nowrap;}
+.nav-btn:hover{border-color:var(--accent);color:var(--accent2);}
+.nav-btn.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+
+/* MAIN */
+.main{flex:1;max-width:720px;width:100%;margin:0 auto;padding:28px 20px 80px;animation:fadeUp .3s ease;}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+
+.section-title{font-family:'Syne',sans-serif;font-size:19px;font-weight:800;margin-bottom:18px;}
+
+/* FORM */
+.form{display:flex;flex-direction:column;gap:10px;margin-bottom:36px;}
+.inputs-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+input{width:100%;padding:13px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;outline:none;transition:border-color .2s;-webkit-appearance:none;}
+input:focus{border-color:var(--accent);}
+input::placeholder{color:var(--muted);}
+.add-btn{padding:13px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-family:'Syne',sans-serif;font-size:16px;font-weight:800;cursor:pointer;transition:opacity .2s,transform .1s;-webkit-tap-highlight-color:transparent;}
+.add-btn:active{opacity:.8;transform:scale(.98);}
+.reset-btn{display:block;max-width:260px;margin:0 auto;}
+
+/* STATS */
+.stats-bar{display:flex;gap:10px;margin-bottom:28px;flex-wrap:wrap;}
+.stat{flex:1;min-width:72px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;text-align:center;}
+.stat-num{font-family:'Syne',sans-serif;font-size:22px;font-weight:900;}
+.stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-top:2px;}
+
+/* DECK LIST */
+.deck-list{display:flex;flex-direction:column;gap:8px;}
+.deck-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 16px;border-radius:10px;background:var(--surface);border:1px solid var(--border);}
+.deck-content{display:flex;align-items:center;gap:8px;min-width:0;flex:1;overflow:hidden;}
+.deck-front{font-weight:600;font-size:14px;white-space:nowrap;}
+.deck-arrow{color:var(--border);flex-shrink:0;font-size:12px;}
+.deck-back{color:var(--muted);font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.deck-right{display:flex;align-items:center;gap:6px;flex-shrink:0;}
+.grade-pill{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;text-transform:uppercase;letter-spacing:1px;}
+.grade-pill.easy{background:#00302a;color:var(--easy);}
+.grade-pill.medium{background:#302a00;color:var(--medium);}
+.grade-pill.hard{background:#301400;color:var(--hard);}
+.del-btn{background:transparent;border:none;color:var(--muted);font-size:15px;cursor:pointer;padding:4px 6px;border-radius:6px;transition:color .2s;-webkit-tap-highlight-color:transparent;}
+.del-btn:hover{color:var(--hard);}
+.empty{color:var(--muted);text-align:center;padding:50px 0;font-size:15px;}
+
+/* PROGRESS */
+.progress{margin-bottom:24px;}
+.progress-meta{display:flex;justify-content:space-between;margin-bottom:8px;}
+.progress-text{font-size:13px;color:var(--muted);}
+.progress-pct{font-family:'Syne',sans-serif;font-size:13px;font-weight:800;color:var(--accent2);}
+.progress-bar{height:5px;background:var(--border);border-radius:999px;overflow:hidden;}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:999px;transition:width .5s ease;}
+
+/* CARD */
+.card-wrapper{perspective:1200px;margin-bottom:20px;}
+.card{position:relative;width:100%;min-height:220px;transform-style:preserve-3d;transition:transform .5s cubic-bezier(.4,0,.2,1);cursor:pointer;border-radius:18px;-webkit-tap-highlight-color:transparent;user-select:none;}
+.card.flipped{transform:rotateY(180deg);}
+.card-face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;border-radius:18px;border:1px solid var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 28px;}
+.card-front{background:var(--surface);}
+.card-back{background:var(--surface2);transform:rotateY(180deg);}
+.card-face-label{position:absolute;top:16px;left:18px;font-size:10px;letter-spacing:2px;color:var(--muted);font-weight:600;text-transform:uppercase;}
+.card-text{font-family:'Syne',sans-serif;font-size:clamp(22px,6vw,38px);font-weight:800;text-align:center;line-height:1.2;}
+.card-hint{position:absolute;bottom:14px;right:18px;font-size:11px;color:var(--muted);}
+
+/* GRADE */
+.grade-row{text-align:center;}
+.grade-label{font-size:13px;color:var(--muted);margin-bottom:12px;display:block;}
+.grade-btns{display:flex;gap:10px;justify-content:center;}
+.grade-btn{flex:1;max-width:140px;padding:12px 10px;border-radius:10px;border:none;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;cursor:pointer;transition:opacity .2s,transform .1s;-webkit-tap-highlight-color:transparent;}
+.grade-btn:active{opacity:.75;transform:scale(.96);}
+.grade-btn.easy{background:#00302a;color:var(--easy);}
+.grade-btn.medium{background:#302a00;color:var(--medium);}
+.grade-btn.hard{background:#301400;color:var(--hard);}
+
+/* DONE */
+.done-banner{text-align:center;padding:60px 20px;}
+.done-emoji{font-size:64px;margin-bottom:16px;}
+.done-title{font-family:'Syne',sans-serif;font-size:20px;font-weight:900;margin-bottom:8px;}
+.done-sub{color:var(--muted);margin-bottom:28px;font-size:15px;}
+
+.honesty-note{text-align:center;font-size:12px;color:var(--muted);margin-top:16px;}
+
+/* BOTTOM NAV — mobile only */
+.bottom-nav{display:none;position:fixed;bottom:0;left:0;right:0;z-index:100;background:rgba(8,8,15,.96);backdrop-filter:blur(18px);border-top:1px solid var(--border);padding:10px 16px 18px;gap:10px;}
+
+@media(max-width:560px){
+  .bottom-nav{display:flex;}
+  .header-nav{display:none;}
+  .main{padding-bottom:100px;}
+  .bottom-nav .nav-btn{flex:1;text-align:center;padding:12px 8px;font-size:15px;}
+  .inputs-row{grid-template-columns:1fr;}
+}
+`;
