@@ -5,6 +5,7 @@ import easySound from "./assets/when clicking easy.mp3";
 import finishSound from "./assets/when memorized all and finish studying.mp3";
 import resetSound from "./assets/when reset and study again clicked.mp3";
 import successIllu from "./assets/watercolor-chinese-style-illustration/7947569.jpg";
+import Auth from "./assets/components/Auth";
 
 function loadCardsLocal() {
   try {
@@ -64,6 +65,7 @@ function Flashcard({ card, onGrade }) {
 }
 
 export default function JpDeck() {
+  const [session, setSession] = useState(null);
   const [cards, setCards] = useState(loadCardsLocal);
   const [section, setSection] = useState("add");
   const [front, setFront] = useState("");
@@ -79,10 +81,20 @@ export default function JpDeck() {
   // Load from Supabase on mount
   useEffect(() => {
     async function fetchCards() {
-      const { data, error } = await supabase.from('cards').select('*').order('created_at', { ascending: false });
+      const { data, error } = await supabase
+        .from("cards")
+        .select("*")
+        .order("created_at", { ascending: false });
       if (error) {
-        console.error("Supabase Fetch Error:", error.message, error.details, error.hint);
-        alert(`Supabase Error: ${error.message}. Please check if the 'cards' table exists in your dashboard.`);
+        console.error(
+          "Supabase Fetch Error:",
+          error.message,
+          error.details,
+          error.hint,
+        );
+        alert(
+          `Supabase Error: ${error.message}. Please check if the 'cards' table exists in your dashboard.`,
+        );
       }
       if (!error && data) {
         console.log(" App Core Loaded: v2.1-stable (authenticated-jp)");
@@ -107,14 +119,14 @@ export default function JpDeck() {
     if (sessionDone && section === "study" && cards.length > 0) {
       const audio = new Audio(finishSound);
       audio.volume = 0.6;
-      audio.play().catch(e => console.log("Audio play blocked:", e));
+      audio.play().catch((e) => console.log("Audio play blocked:", e));
     }
   }, [sessionDone]);
 
   const playSound = (src) => {
     const audio = new Audio(src);
     audio.volume = 0.5;
-    audio.play().catch(e => console.log("Audio play blocked:", e));
+    audio.play().catch((e) => console.log("Audio play blocked:", e));
   };
 
   async function addCard() {
@@ -128,10 +140,13 @@ export default function JpDeck() {
     setFront("");
     setBack("");
 
-    const { data, error } = await supabase.from('cards').insert([newCard]).select();
+    const { data, error } = await supabase
+      .from("cards")
+      .insert([newCard])
+      .select();
     if (!error && data) {
       // Swap temp ID with real DB UUID
-      setCards((prev) => prev.map(c => c.id === tempId ? data[0] : c));
+      setCards((prev) => prev.map((c) => (c.id === tempId ? data[0] : c)));
     }
   }
 
@@ -152,7 +167,7 @@ export default function JpDeck() {
     setCards((prev) => prev.map((c) => (c.id === id ? { ...c, grade } : c)));
 
     // Update DB async
-    supabase.from('cards').update({ grade }).eq('id', id).then();
+    supabase.from("cards").update({ grade }).eq("id", id).then();
 
     if (grade === "hard" || grade === "medium") {
       const card = studyQueue[studyIndex];
@@ -171,7 +186,7 @@ export default function JpDeck() {
 
   async function deleteCard(id) {
     setCards((prev) => prev.filter((c) => c.id !== id));
-    await supabase.from('cards').delete().eq('id', id);
+    await supabase.from("cards").delete().eq("id", id);
   }
 
   async function resetGrades() {
@@ -183,29 +198,41 @@ export default function JpDeck() {
     playSound(resetSound);
 
     // Reset practically un-grades everything; might be heavy for DB but okay for MVP
-    await supabase.from('cards').update({ grade: null }).neq('grade', null);
+    await supabase.from("cards").update({ grade: null }).neq("grade", null);
   }
 
   const handleNuclearReset = async () => {
-    if (!window.confirm("This will clear all branding caches and restart the app. Continue?")) return;
-    if ('caches' in window) {
+    if (
+      !window.confirm(
+        "This will clear all branding caches and restart the app. Continue?",
+      )
+    )
+      return;
+    if ("caches" in window) {
       const names = await caches.keys();
-      await Promise.all(names.map(name => caches.delete(name)));
+      await Promise.all(names.map((name) => caches.delete(name)));
     }
-    if ('serviceWorker' in navigator) {
+    if ("serviceWorker" in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map(reg => reg.unregister()));
+      await Promise.all(regs.map((reg) => reg.unregister()));
     }
     window.location.reload(true);
   };
 
   async function clearAllCards() {
-    if (!window.confirm("⚠️ ARE YOU SURE?\nThis will permanently delete ALL your cards. This cannot be undone.")) {
+    if (
+      !window.confirm(
+        "⚠️ ARE YOU SURE?\nThis will permanently delete ALL your cards. This cannot be undone.",
+      )
+    ) {
       return;
     }
 
     // Use a filter that matches all UUIDs (e.g., id is not null)
-    const { error } = await supabase.from('cards').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    const { error } = await supabase
+      .from("cards")
+      .delete()
+      .neq("id", "00000000-0000-0000-0000-000000000000");
 
     if (error) {
       alert("Error clearing deck: " + error.message);
@@ -218,32 +245,37 @@ export default function JpDeck() {
   async function handleBulkAdd() {
     if (!bulkText.trim()) return;
 
-    const lines = bulkText.split('\n');
+    const lines = bulkText.split("\n");
     const newCards = [];
 
-    lines.forEach(line => {
+    lines.forEach((line) => {
       // Split by comma or tab
       const parts = line.split(/[,\t]/);
       if (parts.length >= 2) {
         newCards.push({
           front: parts[0].trim(),
           back: parts[1].trim(),
-          grade: null
+          grade: null,
         });
       }
     });
 
     if (newCards.length === 0) {
-      alert("No valid cards found. Use 'Front, Back' or 'Front [Tab] Back' format.");
+      alert(
+        "No valid cards found. Use 'Front, Back' or 'Front [Tab] Back' format.",
+      );
       return;
     }
 
     setIsImporting(true);
-    const { data, error } = await supabase.from('cards').insert(newCards).select();
+    const { data, error } = await supabase
+      .from("cards")
+      .insert(newCards)
+      .select();
     setIsImporting(false);
 
     if (!error && data) {
-      setCards(prev => [...data, ...prev]);
+      setCards((prev) => [...data, ...prev]);
       setBulkText("");
       setShowBulkAdd(false);
       alert(`Imported ${newCards.length} cards!`);
@@ -262,16 +294,23 @@ export default function JpDeck() {
     try {
       const aiCards = await processBulkAI(bulkText);
       if (aiCards.length === 0) {
-        alert("AI could not extract any cards from your text. Try a clearer list.");
+        alert(
+          "AI could not extract any cards from your text. Try a clearer list.",
+        );
         return;
       }
 
-      const { data, error } = await supabase.from('cards').insert(aiCards).select();
+      const { data, error } = await supabase
+        .from("cards")
+        .insert(aiCards)
+        .select();
       if (!error && data) {
-        setCards(prev => [...data, ...prev]);
+        setCards((prev) => [...data, ...prev]);
         setBulkText("");
         setShowBulkAdd(false);
-        alert(`AI successfully generated and imported ${aiCards.length} cards!`);
+        alert(
+          `AI successfully generated and imported ${aiCards.length} cards!`,
+        );
       } else {
         alert("Error saving AI cards: " + (error?.message || "Unknown error"));
       }
@@ -287,6 +326,8 @@ export default function JpDeck() {
   const easyCount = cards.filter((c) => c.grade === "easy").length;
   const pct = cards.length ? Math.round((easyCount / cards.length) * 100) : 0;
 
+  if (!session) return <Auth onLogin={(s) => setSession(s)} />;
+
   return (
     <>
       <style>{CSS}</style>
@@ -296,13 +337,23 @@ export default function JpDeck() {
       <div className="app">
         <header className="header">
           <div className="logo">
-            <span id="brand-fix-check" className="logo-jp">JP</span>
+            <span id="brand-fix-check" className="logo-jp">
+              JP
+            </span>
             <span className="logo-deck">DECK</span>
             <button
               onClick={handleNuclearReset}
-              style={{ fontSize: '8px', opacity: 0.1, marginLeft: '8px', background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'help' }}
+              style={{
+                fontSize: "8px",
+                opacity: 0.1,
+                marginLeft: "8px",
+                background: "transparent",
+                border: "none",
+                color: "var(--text)",
+                cursor: "help",
+              }}
             >
-              (v2.1.6 • Force Sync)
+              (v2.1.7 • Sync Polish)
             </button>
           </div>
           <nav className="header-nav">
@@ -333,68 +384,83 @@ export default function JpDeck() {
                     onChange={(e) => setFront(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && addCard()}
                   />
-                  <div style={{ position: 'relative', flex: 1 }}>
+                  <div style={{ position: "relative", flex: 1 }}>
                     <input
                       placeholder="Back (e.g. Hello)"
                       value={back}
                       onChange={(e) => setBack(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && addCard()}
-                      style={{ paddingRight: '45px' }}
+                      style={{ paddingRight: "45px" }}
                     />
                     <button
                       onClick={handleAiSuggest}
                       disabled={isAiLoading}
                       title="AI Smart Fill"
                       style={{
-                        position: 'absolute',
-                        right: '8px',
-                        top: '50%',
-                        transform: 'translateY(-50%)',
-                        background: 'transparent',
-                        border: 'none',
-                        fontSize: '18px',
-                        cursor: 'pointer',
+                        position: "absolute",
+                        right: "8px",
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        background: "var(--accent)",
+                        border: "none",
+                        fontSize: "18px",
+                        cursor: "pointer",
                         opacity: isAiLoading ? 0.5 : 1,
-                        padding: '4px'
+                        padding: "4px",
                       }}
                     >
-                      {isAiLoading ? '⌛' : '✨'}
+                      {isAiLoading ? "⌛" : "✨"}
                     </button>
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                  <button className="add-btn" onClick={addCard} style={{ flex: '1 1 120px' }}>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <button
+                    className="add-btn"
+                    onClick={addCard}
+                    style={{ flex: "1 1 120px" }}
+                  >
                     Add Card
                   </button>
                   <button
                     className={`nav-btn ${showBulkAdd ? "active" : ""}`}
                     onClick={() => setShowBulkAdd(!showBulkAdd)}
-                    style={{ background: 'var(--surface2)', border: '1px solid var(--border)', flex: '1 1 120px', borderRadius: '10px', color: 'var(--text)' }}
+                    style={{
+                      background: "var(--surface2)",
+                      border: "1px solid var(--border)",
+                      flex: "1 1 120px",
+                      borderRadius: "10px",
+                      color: "var(--text)",
+                    }}
                   >
                     📝 Bulk Import
                   </button>
                 </div>
 
                 {showBulkAdd && (
-                  <div className="bulk-add" style={{ marginTop: '16px', animation: 'fadeUp .2s' }}>
+                  <div
+                    className="bulk-add"
+                    style={{ marginTop: "16px", animation: "fadeUp .2s" }}
+                  >
                     <textarea
                       placeholder="Paste cards here:&#10;こんにちは, Hello&#10;さようなら, Goodbye&#10;(One card per line, use comma or tab)"
                       value={bulkText}
                       onChange={(e) => setBulkText(e.target.value)}
                       style={{
-                        width: '100%',
-                        height: '150px',
-                        background: 'var(--surface2)',
-                        border: '1px solid var(--border)',
-                        borderRadius: '10px',
-                        padding: '12px',
-                        color: 'var(--text)',
-                        fontFamily: 'inherit',
-                        fontSize: '14px',
-                        resize: 'vertical'
+                        width: "100%",
+                        height: "150px",
+                        background: "var(--surface2)",
+                        border: "1px solid var(--border)",
+                        borderRadius: "10px",
+                        padding: "12px",
+                        color: "var(--text)",
+                        fontFamily: "inherit",
+                        fontSize: "14px",
+                        resize: "vertical",
                       }}
                     />
-                    <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                    <div
+                      style={{ display: "flex", gap: "8px", marginTop: "10px" }}
+                    >
                       <button
                         className="add-btn"
                         onClick={handleBulkAdd}
@@ -407,9 +473,16 @@ export default function JpDeck() {
                         className="add-btn"
                         onClick={handleBulkAiAdd}
                         disabled={isImporting || isAiLoading}
-                        style={{ flex: 1, background: 'var(--surface)', border: '1px solid var(--accent)' }}
+                        style={{
+                          flex: 1,
+                          background: "var(--accent)",
+                          color: "#000",
+                          fontWeight: "800",
+                        }}
                       >
-                        {isAiLoading ? "AI is Thinking..." : "✨ AI Auto-fill All"}
+                        {isAiLoading
+                          ? "AI is Thinking..."
+                          : "✨ AI Auto-fill All"}
                       </button>
                     </div>
                   </div>
@@ -443,12 +516,28 @@ export default function JpDeck() {
                 </div>
               )}
 
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h2 className="section-title" style={{ margin: 0 }}>Your Deck</h2>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "16px",
+                }}
+              >
+                <h2 className="section-title" style={{ margin: 0 }}>
+                  Your Deck
+                </h2>
                 {cards.length > 0 && (
                   <button
                     onClick={clearAllCards}
-                    style={{ background: 'transparent', border: 'none', color: 'var(--hard)', cursor: 'pointer', fontSize: '12px', opacity: 0.7 }}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: "var(--hard)",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                      opacity: 0.7,
+                    }}
                   >
                     🗑️ Clear All
                   </button>
@@ -520,19 +609,34 @@ export default function JpDeck() {
               )}
               {cards.length > 0 && sessionDone && (
                 <div className="done-banner highlighted">
-                  <h3 className="done-title">Don't forget to take breaks, CONGRATS!</h3>
+                  <h3 className="done-title">
+                    Don't forget to take breaks, CONGRATS!
+                  </h3>
                   <p className="done-sub">
                     {easyCount} of {cards.length} cards mastered
                   </p>
                   <div className="done-actions">
-                    <button className="add-btn medium-btn reset-btn" onClick={resetGrades}>
+                    <button
+                      className="add-btn medium-btn reset-btn"
+                      onClick={resetGrades}
+                    >
                       Study Again
                     </button>
-                    <button className="add-btn medium-btn rest-btn" onClick={() => setSection("add")}>
+                    <button
+                      className="add-btn medium-btn rest-btn"
+                      onClick={() => setSection("add")}
+                    >
                       Rest
                     </button>
                   </div>
-                  <p style={{ marginTop: '20px', fontSize: '10px', opacity: 0.3, color: 'var(--text)' }}>
+                  <p
+                    style={{
+                      marginTop: "20px",
+                      fontSize: "10px",
+                      opacity: 0.3,
+                      color: "var(--text)",
+                    }}
+                  >
                     by-jpdev
                   </p>
                 </div>
