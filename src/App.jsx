@@ -299,10 +299,14 @@ export default function JpDeck() {
         );
         return;
       }
+      const aiCardsWithUser = aiCards.map((c) => ({
+        ...c,
+        user_id: session.user.id,
+      }));
 
       const { data, error } = await supabase
         .from("cards")
-        .insert(aiCards)
+        .insert(aiCardsWithUser) // ← was aiCards
         .select();
       if (!error && data) {
         setCards((prev) => [...data, ...prev]);
