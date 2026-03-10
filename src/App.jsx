@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "./lib/supabase";
 import { getJapaneseMeaning, processBulkAI } from "./lib/gemini";
 import easySound from "./assets/when clicking easy.mp3";
@@ -78,12 +78,33 @@ export default function JpDeck() {
   const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [bulkText, setBulkText] = useState("");
 
-  // Load from Supabase on mount
+  // ✅ ADD THIS — restores session on refresh
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // ── Load cards for the logged-in user  ← your existing one stays below
+  useEffect(() => {
+    if (!session) return;
+    // ...
+  }, [session]);
+
+  // ── Load cards for the logged-in user
+  useEffect(() => {
+    if (!session) return;
     async function fetchCards() {
       const { data, error } = await supabase
         .from("cards")
         .select("*")
+        .eq("user_id", session.user.id)
         .order("created_at", { ascending: false });
       if (error) {
         console.error(
@@ -97,13 +118,13 @@ export default function JpDeck() {
         );
       }
       if (!error && data) {
-        console.log(" App Core Loaded: v2.1-stable (authenticated-jp)");
-        console.log(" Database Connected: Fetched", data.length, "cards");
+        console.log("App Core Loaded: v2.2-auth");
+        console.log("Database Connected: Fetched", data.length, "cards");
         setCards(data);
       }
     }
     fetchCards();
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     if (section === "study") {
@@ -114,7 +135,6 @@ export default function JpDeck() {
     }
   }, [section]);
 
-  // Audio Playback logic
   useEffect(() => {
     if (sessionDone && section === "study" && cards.length > 0) {
       const audio = new Audio(finishSound);
@@ -132,9 +152,13 @@ export default function JpDeck() {
   async function addCard() {
     if (!front.trim() || !back.trim()) return;
 
-    const newCard = { front: front.trim(), back: back.trim(), grade: null };
+    const newCard = {
+      front: front.trim(),
+      back: back.trim(),
+      grade: null,
+      user_id: session.user.id, // ✅ scoped to user
+    };
 
-    // Optimistic UI update
     const tempId = Date.now();
     setCards((prev) => [{ ...newCard, id: tempId }, ...prev]);
     setFront("");
@@ -145,7 +169,6 @@ export default function JpDeck() {
       .insert([newCard])
       .select();
     if (!error && data) {
-      // Swap temp ID with real DB UUID
       setCards((prev) => prev.map((c) => (c.id === tempId ? data[0] : c)));
     }
   }
@@ -157,16 +180,12 @@ export default function JpDeck() {
     }
     setIsAiLoading(true);
     const suggestion = await getJapaneseMeaning(front);
-    if (suggestion) {
-      setBack(suggestion);
-    }
+    if (suggestion) setBack(suggestion);
     setIsAiLoading(false);
   }
 
   async function handleGrade(id, grade) {
     setCards((prev) => prev.map((c) => (c.id === id ? { ...c, grade } : c)));
-
-    // Update DB async
     supabase.from("cards").update({ grade }).eq("id", id).then();
 
     if (grade === "hard" || grade === "medium") {
@@ -196,9 +215,10 @@ export default function JpDeck() {
     setStudyIndex(0);
     setSessionDone(false);
     playSound(resetSound);
-
-    // Reset practically un-grades everything; might be heavy for DB but okay for MVP
-    await supabase.from("cards").update({ grade: null }).neq("grade", null);
+    await supabase
+      .from("cards")
+      .update({ grade: null })
+      .eq("user_id", session.user.id); // ✅ only reset own cards
   }
 
   const handleNuclearReset = async () => {
@@ -224,15 +244,13 @@ export default function JpDeck() {
       !window.confirm(
         "⚠️ ARE YOU SURE?\nThis will permanently delete ALL your cards. This cannot be undone.",
       )
-    ) {
+    )
       return;
-    }
 
-    // Use a filter that matches all UUIDs (e.g., id is not null)
     const { error } = await supabase
       .from("cards")
       .delete()
-      .neq("id", "00000000-0000-0000-0000-000000000000");
+      .eq("user_id", session.user.id); // ✅ only delete own cards
 
     if (error) {
       alert("Error clearing deck: " + error.message);
@@ -249,13 +267,13 @@ export default function JpDeck() {
     const newCards = [];
 
     lines.forEach((line) => {
-      // Split by comma or tab
       const parts = line.split(/[,\t]/);
       if (parts.length >= 2) {
         newCards.push({
           front: parts[0].trim(),
           back: parts[1].trim(),
           grade: null,
+          user_id: session.user.id, // ✅ scoped to user
         });
       }
     });
@@ -299,14 +317,15 @@ export default function JpDeck() {
         );
         return;
       }
+
       const aiCardsWithUser = aiCards.map((c) => ({
         ...c,
-        user_id: session.user.id,
+        user_id: session.user.id, // ✅ scoped to user
       }));
 
       const { data, error } = await supabase
         .from("cards")
-        .insert(aiCardsWithUser) // ← was aiCards
+        .insert(aiCardsWithUser)
         .select();
       if (!error && data) {
         setCards((prev) => [...data, ...prev]);
@@ -326,10 +345,17 @@ export default function JpDeck() {
     }
   }
 
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    setSession(null);
+    setCards([]);
+  }
+
   const currentCard = studyQueue[studyIndex];
   const easyCount = cards.filter((c) => c.grade === "easy").length;
   const pct = cards.length ? Math.round((easyCount / cards.length) * 100) : 0;
 
+  // ── Guard: show auth screen if not logged in
   if (!session) return <Auth onLogin={(s) => setSession(s)} />;
 
   return (
@@ -357,7 +383,7 @@ export default function JpDeck() {
                 cursor: "help",
               }}
             >
-              (v2.1.7 • Sync Polish)
+              (v2.2 • Auth)
             </button>
           </div>
           <nav className="header-nav">
@@ -372,6 +398,9 @@ export default function JpDeck() {
               onClick={() => setSection("study")}
             >
               Study
+            </button>
+            <button className="nav-btn logout-btn" onClick={handleLogout}>
+              Sign Out
             </button>
           </nav>
         </header>
@@ -600,7 +629,6 @@ export default function JpDeck() {
                       />
                     </div>
                   </div>
-
                   <Flashcard
                     key={currentCard.id + "-" + studyIndex}
                     card={currentCard}
@@ -662,6 +690,9 @@ export default function JpDeck() {
           >
             📖 Study
           </button>
+          <button className="nav-btn logout-btn" onClick={handleLogout}>
+            Sign Out
+          </button>
         </nav>
       </div>
     </>
@@ -685,7 +716,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-main);min-hei
 .app-bg img{width:100%;height:100%;object-fit:cover;mix-blend-mode:luminosity;filter:brightness(0.7);animation:slowZoom 30s infinite alternate ease-in-out;}
 @keyframes slowZoom{from{transform:scale(1);}to{transform:scale(1.15);}}
 
-/* HEADER & LOGO */
 .header{position:sticky;top:0;z-index:100;background:rgba(11,11,20,0.85);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:70px;}
 .logo{display:flex;align-items:center;gap:4px;font-family:var(--font-brand);font-weight:900;font-size:26px;letter-spacing:-1px;}
 .logo-jp{background:#fff;color:#000;padding:0 8px;border-radius:6px;line-height:1;display:inline-block;font-family:var(--font-brand);font-weight:900;}
@@ -695,14 +725,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-main);min-hei
 .nav-btn{padding:10px 22px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-family:var(--font-brand);font-size:14px;font-weight:700;cursor:pointer;transition:all .25s ease;white-space:nowrap;}
 .nav-btn:hover{border-color:var(--accent);color:var(--accent);transform:translateY(-1px);}
 .nav-btn.active{background:var(--accent);border-color:var(--accent);color:#000;box-shadow:0 0 20px var(--accent-glow);}
+.logout-btn{color:var(--hard);border-color:var(--hard);}
+.logout-btn:hover{background:var(--hard);color:#000;border-color:var(--hard);}
 
-/* MAIN */
 .main{flex:1;max-width:800px;width:100%;margin:0 auto;padding:40px 20px 100px;animation:fadeUp .4s cubic-bezier(0.16, 1, 0.3, 1);}
 @keyframes fadeUp{from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:none;}}
 
 .section-title{font-family:var(--font-brand);font-size:24px;font-weight:800;margin-bottom:24px;letter-spacing:-0.5px;}
 
-/* FORM */
 .form{display:flex;flex-direction:column;gap:12px;margin-bottom:48px;background:var(--surface);padding:24px;border-radius:20px;border:1px solid var(--border);box-shadow:0 10px 30px rgba(0,0,0,0.2);}
 .inputs-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 input{width:100%;padding:16px 20px;background:var(--surface2);border:1px solid var(--border);border-radius:14px;color:var(--text);font-family:var(--font-main);font-size:16px;outline:none;transition:all .2s ease;}
@@ -711,14 +741,12 @@ input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);}
 .add-btn:hover{transform:scale(1.02);filter:brightness(1.1);}
 .add-btn:active{transform:scale(0.97);}
 
-/* STATS */
 .stats-bar{display:grid;grid-template-columns:repeat(auto-fit, minmax(140px, 1fr));gap:12px;margin-bottom:40px;}
 .stat{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:20px;text-align:center;transition:transform .2s;}
 .stat:hover{transform:translateY(-4px);}
 .stat-num{font-family:var(--font-brand);font-size:28px;font-weight:900;line-height:1;}
 .stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;margin-top:8px;font-weight:700;}
 
-/* DECK LIST */
 .deck-list{display:flex;flex-direction:column;gap:10px;}
 .deck-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-radius:16px;background:var(--surface);border:1px solid var(--border);transition:all .2s;}
 .deck-item:hover{border-color:var(--accent);background:var(--surface2);}
@@ -726,8 +754,15 @@ input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);}
 .deck-front{font-family:var(--font-brand);font-weight:800;font-size:16px;color:var(--text);}
 .deck-arrow{color:var(--muted);font-size:12px;}
 .deck-back{color:var(--accent);font-weight:500;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.deck-right{display:flex;align-items:center;gap:8px;}
+.grade-pill{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;padding:3px 8px;border-radius:6px;}
+.grade-pill.easy{background:rgba(0,209,160,0.15);color:var(--easy);}
+.grade-pill.medium{background:rgba(255,204,102,0.15);color:var(--medium);}
+.grade-pill.hard{background:rgba(255,118,117,0.15);color:var(--hard);}
+.del-btn{background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:4px 8px;border-radius:6px;transition:color .2s;}
+.del-btn:hover{color:var(--hard);}
+.empty{color:var(--muted);text-align:center;padding:40px 0;font-size:15px;}
 
-/* CARD & STUDY */
 .card-wrapper{perspective:1500px;margin-bottom:30px;}
 .card{position:relative;width:100%;min-height:300px;transform-style:preserve-3d;transition:transform .6s cubic-bezier(0.34, 1.56, 0.64, 1);cursor:pointer;}
 .card.flipped{transform:rotateY(180deg);}
@@ -749,15 +784,21 @@ input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);}
 .grade-btn.hard{color:var(--hard);border-color:var(--hard);background:rgba(255,118,117,0.05);}
 .grade-btn.hard:hover{background:var(--hard);color:#000;}
 
-/* DONE SCREEN */
+.progress{margin-bottom:24px;}
+.progress-meta{display:flex;justify-content:space-between;margin-bottom:8px;}
+.progress-text{font-size:13px;color:var(--muted);font-weight:600;}
+.progress-pct{font-size:13px;color:var(--accent);font-weight:800;}
+.progress-bar{height:6px;background:var(--surface2);border-radius:99px;overflow:hidden;}
+.progress-fill{height:100%;background:var(--accent);border-radius:99px;transition:width .4s ease;}
+.honesty-note{text-align:center;font-size:12px;color:var(--muted);margin-top:16px;opacity:0.6;}
+
 .done-banner{position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;gap:16px;background:var(--surface);padding:60px 40px;border-radius:30px;border:1px solid var(--border);box-shadow:0 20px 50px rgba(0,0,0,0.3);overflow:hidden;}
-.done-banner.highlighted .done-title, .done-banner.highlighted .done-sub, .done-banner.highlighted .done-actions{position:relative;z-index:2;}
+.done-banner.highlighted .done-title,.done-banner.highlighted .done-sub,.done-banner.highlighted .done-actions{position:relative;z-index:2;}
 .done-title{font-family:var(--font-brand);font-size:26px;font-weight:900;line-height:1.2;color:var(--text);text-shadow:0 2px 10px rgba(0,0,0,0.5);}
 .done-sub{color:var(--muted);font-weight:600;font-size:14px;letter-spacing:1px;text-transform:uppercase;text-shadow:0 2px 10px rgba(0,0,0,0.5);}
 .done-actions{display:flex;gap:12px;justify-content:center;width:100%;margin-top:8px;}
 .medium-btn{width:auto;min-width:160px;padding:14px 24px;font-size:16px;border-radius:14px;}
 
-/* BOTTOM NAV */
 .bottom-nav{display:none;position:fixed;bottom:0;left:0;right:0;z-index:90;background:rgba(11,11,20,0.9);backdrop-filter:blur(20px);border-top:1px solid var(--border);padding:16px 16px 32px;gap:12px;}
 
 @media(max-width:600px){
@@ -768,10 +809,3 @@ input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);}
   .stat{padding:16px;}
 }
 `;
-
-// Inject CSS into the document head
-if (typeof document !== "undefined") {
-  const styleTag = document.createElement("style");
-  styleTag.textContent = CSS;
-  document.head.appendChild(styleTag);
-}
