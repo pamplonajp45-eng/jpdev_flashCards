@@ -65,6 +65,7 @@ function Flashcard({ card, onGrade }) {
 }
 
 export default function JpDeck() {
+  const [autoFlip, setAutoFlip] = useState(false);
   const [session, setSession] = useState(null);
   const [cards, setCards] = useState(loadCardsLocal);
   const [section, setSection] = useState("add");
@@ -78,7 +79,6 @@ export default function JpDeck() {
   const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [bulkText, setBulkText] = useState("");
 
-  // ✅ ADD THIS — restores session on refresh
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -91,13 +91,11 @@ export default function JpDeck() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // ── Load cards for the logged-in user  ← your existing one stays below
   useEffect(() => {
     if (!session) return;
     // ...
   }, [session]);
 
-  // ── Load cards for the logged-in user
   useEffect(() => {
     if (!session) return;
     async function fetchCards() {
@@ -127,7 +125,7 @@ export default function JpDeck() {
   }, [session]);
 
   useEffect(() => {
-    if (section === "study") {
+    if (section === "study" && studyQueue.length === 0 && !sessionDone) {
       const queue = cards.filter((c) => c.grade !== "easy");
       setStudyQueue(queue);
       setStudyIndex(0);
@@ -194,12 +192,20 @@ export default function JpDeck() {
       setStudyQueue(newQueue);
       setStudyIndex(0);
       if (newQueue.length === 0) setSessionDone(true);
+
+      // auto-flip if 1 card remaining
+      if (newQueue.length === 1) {
+        setTimeout(() => setAutoFlip(true), 600);
+      } else {
+        setAutoFlip(false);
+      }
     } else {
       const newQueue = studyQueue.filter((c) => c.id !== id);
       setStudyQueue(newQueue);
       setStudyIndex(0);
       if (grade === "easy") playSound(easySound);
       if (newQueue.length === 0) setSessionDone(true);
+      setAutoFlip(false);
     }
   }
 
@@ -618,14 +624,26 @@ export default function JpDeck() {
                   <div className="progress">
                     <div className="progress-meta">
                       <span className="progress-text">
-                        {studyQueue.length} remaining · {easyCount} mastered
+                        {studyQueue.length} remaining ·{" "}
+                        {cards.length - studyQueue.length} mastered
                       </span>
-                      <span className="progress-pct">{pct}%</span>
+                      <span className="progress-pct">
+                        {cards.length
+                          ? Math.round(
+                              ((cards.length - studyQueue.length) /
+                                cards.length) *
+                                100,
+                            )
+                          : 0}
+                        %
+                      </span>
                     </div>
                     <div className="progress-bar">
                       <div
                         className="progress-fill"
-                        style={{ width: `${pct}%` }}
+                        style={{
+                          width: `${cards.length ? Math.round(((cards.length - studyQueue.length) / cards.length) * 100) : 0}%`,
+                        }}
                       />
                     </div>
                   </div>
