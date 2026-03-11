@@ -13,7 +13,7 @@ export async function loadLessonFromExcel(lessonFile) {
     // Or we can import it if we know the path.
 
     // Using fetch on the relative path from the app root
-    const response = await fetch(`/src/assets/excels/${lessonFile}`);
+    const response = await fetch(`/excels/${lessonFile}`);
     const arrayBuffer = await response.arrayBuffer();
 
     const workbook = XLSX.read(arrayBuffer, { type: 'array' });
