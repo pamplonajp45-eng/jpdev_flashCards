@@ -10,4 +10,16 @@ export default defineConfig({
       },
     }),
   ],
+  optimizeDeps: {
+    include: ['xlsx'],
+    force: true,
+  },
+  server: {
+    hmr: {
+      overlay: true,
+    },
+    watch: {
+      usePolling: true,
+    },
+  },
 })

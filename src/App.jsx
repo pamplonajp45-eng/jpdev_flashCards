@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "./lib/supabase";
 import { getJapaneseMeaning, processBulkAI } from "./lib/gemini";
-import easySound from "./assets/when clicking easy.mp3";
+import { loadLessonFromExcel } from "./lib/excelLoader";
 import finishSound from "./assets/when memorized all and finish studying.mp3";
 import resetSound from "./assets/when reset and study again clicked.mp3";
 import successIllu from "./assets/watercolor-chinese-style-illustration/7947569.jpg";
@@ -212,11 +212,11 @@ export default function JpDeck() {
       prev.map((c) =>
         c.id === id
           ? {
-              ...c,
-              interval: newInterval,
-              ease_factor: newEase,
-              due_date: dueDateStr,
-            }
+            ...c,
+            interval: newInterval,
+            ease_factor: newEase,
+            due_date: dueDateStr,
+          }
           : c,
       ),
     );
@@ -246,7 +246,7 @@ export default function JpDeck() {
       }
     } else {
       // Easy — card is done for today
-      if (grade === "easy") playSound(easySound);
+      if (grade === "easy");
       const newQueue = studyQueue.filter((c) => c.id !== id);
       setStudyQueue(newQueue);
       setStudyIndex(0);
@@ -404,6 +404,43 @@ export default function JpDeck() {
     }
   }
 
+  async function handleLessonGenerate(lessonFile, lessonName) {
+    if (!window.confirm(`Are you sure you want to generate ${lessonName} flashcards? This will use the pre-defined vocabulary from the excel file.`)) {
+      return;
+    }
+
+    setIsAiLoading(true);
+    try {
+      const lessonCards = await loadLessonFromExcel(lessonFile);
+      if (lessonCards.length === 0) {
+        alert("No cards found in the excel file.");
+        return;
+      }
+
+      const cardsWithUser = lessonCards.map((c) => ({
+        ...c,
+        user_id: session.user.id,
+      }));
+
+      const { data, error } = await supabase
+        .from("cards")
+        .insert(cardsWithUser)
+        .select();
+
+      if (!error && data) {
+        setCards((prev) => [...data, ...prev]);
+        alert(`Successfully generated ${lessonCards.length} cards for ${lessonName}!`);
+      } else {
+        alert("Error saving lesson cards: " + (error?.message || "Unknown error"));
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Failed to load lesson: " + (e.message || "Unknown error"));
+    } finally {
+      setIsAiLoading(false);
+    }
+  }
+
   async function handleLogout() {
     await supabase.auth.signOut();
     setSession(null);
@@ -469,7 +506,24 @@ export default function JpDeck() {
         <main className="main">
           {section === "add" && (
             <>
-              <h2 className="section-title">Add a Card</h2>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px", gap: "10px", flexWrap: "wrap" }}>
+                <h2 className="section-title" style={{ margin: 0 }}>Add a Card</h2>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <select 
+                    className="nav-btn" 
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        handleLessonGenerate(e.target.value, e.target.options[e.target.selectedIndex].text);
+                        e.target.value = ""; // reset
+                      }
+                    }}
+                    style={{ background: "var(--surface2)", padding: "10px 15px" }}
+                  >
+                    <option value="">📚 Select Lesson</option>
+                    <option value="minna_nihongo_lesson1_v2 (1).xlsx">Minna no Nihongo Lesson 1</option>
+                  </select>
+                </div>
+              </div>
               <div className="form">
                 <div className="inputs-row">
                   <input
@@ -536,7 +590,7 @@ export default function JpDeck() {
                     style={{ marginTop: "16px", animation: "fadeUp .2s" }}
                   >
                     <textarea
-                      placeholder="Paste cards here:&#10;こんにちは, Hello&#10;さようなら, Goodbye&#10;(One card per line, use comma or tab)"
+                      placeholder="You can just paste nihongo text only in here:&#10;こんにちは,&#10;さようなら, &#10;(One card per line, use comma or tab)"
                       value={bulkText}
                       onChange={(e) => setBulkText(e.target.value)}
                       style={{
@@ -557,14 +611,6 @@ export default function JpDeck() {
                     >
                       <button
                         className="add-btn"
-                        onClick={handleBulkAdd}
-                        disabled={isImporting || isAiLoading}
-                        style={{ flex: 1 }}
-                      >
-                        Process List
-                      </button>
-                      <button
-                        className="add-btn"
                         onClick={handleBulkAiAdd}
                         disabled={isImporting || isAiLoading}
                         style={{
@@ -575,8 +621,8 @@ export default function JpDeck() {
                         }}
                       >
                         {isAiLoading
-                          ? "AI is Thinking..."
-                          : "✨ AI Auto-fill All"}
+                          ? "jp DECK is Thinking..."
+                          : "Auto Fill"}
                       </button>
                     </div>
                   </div>
@@ -695,10 +741,10 @@ export default function JpDeck() {
                       <span className="progress-pct">
                         {cards.length
                           ? Math.round(
-                              ((cards.length - studyQueue.length) /
-                                cards.length) *
-                                100,
-                            )
+                            ((cards.length - studyQueue.length) /
+                              cards.length) *
+                            100,
+                          )
                           : 0}
                         %
                       </span>
@@ -794,7 +840,7 @@ const CSS = `
   --font-brand: 'Syne', sans-serif;
   --font-main: 'Inter', sans-serif;
 }
-body{background:var(--bg);color:var(--text);font-family:var(--font-main);min-height:100dvh;overflow-x:hidden;}
+body{background:var(--bg);color:var(--text);font-family:var(--font-main);min-height:100dvh;overflow-x:hidden;-webkit-tap-highlight-color:transparent;}
 .app{position:relative;display:flex;flex-direction:column;min-height:100dvh;z-index:1;}
 .app-bg{position:fixed;inset:0;z-index:0;opacity:0.25;pointer-events:none;background:var(--bg);}
 .app-bg img{width:100%;height:100%;object-fit:cover;mix-blend-mode:luminosity;filter:brightness(0.7);animation:slowZoom 30s infinite alternate ease-in-out;}
@@ -812,84 +858,109 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-main);min-hei
 .logout-btn{color:var(--hard);border-color:var(--hard);}
 .logout-btn:hover{background:var(--hard);color:#000;border-color:var(--hard);}
 
-.main{flex:1;max-width:800px;width:100%;margin:0 auto;padding:40px 20px 100px;animation:fadeUp .4s cubic-bezier(0.16, 1, 0.3, 1);}
+.main{flex:1;max-width:900px;width:100%;margin:0 auto;padding:40px 20px 100px;animation:fadeUp .4s cubic-bezier(0.16, 1, 0.3, 1);}
 @keyframes fadeUp{from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:none;}}
 
 .section-title{font-family:var(--font-brand);font-size:24px;font-weight:800;margin-bottom:24px;letter-spacing:-0.5px;}
 
-.form{display:flex;flex-direction:column;gap:12px;margin-bottom:48px;background:var(--surface);padding:24px;border-radius:20px;border:1px solid var(--border);box-shadow:0 10px 30px rgba(0,0,0,0.2);}
+.form{display:flex;flex-direction:column;gap:12px;margin-bottom:40px;background:var(--surface);padding:20px;border-radius:20px;border:1px solid var(--border);box-shadow:0 10px 30px rgba(0,0,0,0.2);}
 .inputs-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-input{width:100%;padding:16px 20px;background:var(--surface2);border:1px solid var(--border);border-radius:14px;color:var(--text);font-family:var(--font-main);font-size:16px;outline:none;transition:all .2s ease;}
+input{width:100%;padding:14px 18px;background:var(--surface2);border:1px solid var(--border);border-radius:14px;color:var(--text);font-family:var(--font-main);font-size:16px;outline:none;transition:all .2s ease;}
 input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);}
-.add-btn{padding:16px;border-radius:14px;border:none;background:var(--accent);color:#000;font-family:var(--font-brand);font-size:18px;font-weight:800;cursor:pointer;transition:all .2s cubic-bezier(0.175, 0.885, 0.32, 1.275);}
+.add-btn{padding:16px;border-radius:14px;border:none;background:var(--accent);color:#000;font-family:var(--font-brand);font-size:18px;font-weight:800;cursor:pointer;transition:all .2s cubic-bezier(0.175, 0.885, 0.32, 1.275);-webkit-user-select:none;user-select:none;}
 .add-btn:hover{transform:scale(1.02);filter:brightness(1.1);}
 .add-btn:active{transform:scale(0.97);}
 
-.stats-bar{display:grid;grid-template-columns:repeat(auto-fit, minmax(140px, 1fr));gap:12px;margin-bottom:40px;}
-.stat{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:20px;text-align:center;transition:transform .2s;}
+.stats-bar{display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:12px;margin-bottom:40px;}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:16px;text-align:center;transition:transform .2s;}
 .stat:hover{transform:translateY(-4px);}
-.stat-num{font-family:var(--font-brand);font-size:28px;font-weight:900;line-height:1;}
-.stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;margin-top:8px;font-weight:700;}
+.stat-num{font-family:var(--font-brand);font-size:24px;font-weight:900;line-height:1;}
+.stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-top:6px;font-weight:700;}
 
 .deck-list{display:flex;flex-direction:column;gap:10px;}
-.deck-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-radius:16px;background:var(--surface);border:1px solid var(--border);transition:all .2s;}
+.deck-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-radius:16px;background:var(--surface);border:1px solid var(--border);transition:all .2s;}
 .deck-item:hover{border-color:var(--accent);background:var(--surface2);}
-.deck-content{display:flex;align-items:center;gap:12px;min-width:0;flex:1;}
-.deck-front{font-family:var(--font-brand);font-weight:800;font-size:16px;color:var(--text);}
-.deck-arrow{color:var(--muted);font-size:12px;}
-.deck-back{color:var(--accent);font-weight:500;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.deck-right{display:flex;align-items:center;gap:8px;}
-.grade-pill{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;padding:3px 8px;border-radius:6px;}
+.deck-content{display:flex;align-items:center;gap:10px;min-width:0;flex:1;}
+.deck-front{font-family:var(--font-brand);font-weight:800;font-size:15px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.deck-arrow{color:var(--muted);font-size:10px;flex-shrink:0;}
+.deck-back{color:var(--accent);font-weight:500;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.deck-right{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+.grade-pill{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;padding:3px 7px;border-radius:6px;white-space:nowrap;}
 .grade-pill.easy{background:rgba(0,209,160,0.15);color:var(--easy);}
 .grade-pill.medium{background:rgba(255,204,102,0.15);color:var(--medium);}
 .grade-pill.hard{background:rgba(255,118,117,0.15);color:var(--hard);}
-.del-btn{background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:4px 8px;border-radius:6px;transition:color .2s;}
+.del-btn{background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:6px 10px;border-radius:6px;transition:color .2s;}
 .del-btn:hover{color:var(--hard);}
 .empty{color:var(--muted);text-align:center;padding:40px 0;font-size:15px;}
 
-.card-wrapper{perspective:1500px;margin-bottom:30px;}
-.card{position:relative;width:100%;min-height:300px;transform-style:preserve-3d;transition:transform .6s cubic-bezier(0.34, 1.56, 0.64, 1);cursor:pointer;}
+.card-wrapper{perspective:1500px;margin-bottom:30px;width:100%;max-width:500px;margin-left:auto;margin-right:auto;}
+.card{position:relative;width:100%;min-height:320px;transform-style:preserve-3d;transition:transform .6s cubic-bezier(0.34, 1.56, 0.64, 1);cursor:pointer;-webkit-user-select:none;user-select:none;}
 .card.flipped{transform:rotateY(180deg);}
-.card-face{position:absolute;inset:0;backface-visibility:hidden;border-radius:24px;border:2px solid var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;box-shadow:0 20px 50px rgba(0,0,0,0.3);}
-.card-face-label{position:absolute;top:20px;left:24px;font-size:10px;font-weight:800;letter-spacing:2px;color:var(--muted);opacity:0.5;}
-.card-hint{position:absolute;bottom:20px;font-size:12px;color:var(--muted);font-weight:600;opacity:0.6;}
-.card-front{background:linear-gradient(135deg, var(--surface), var(--surface2));}
+.card-face{position:absolute;inset:0;backface-visibility:hidden;border-radius:28px;border:2px solid var(--border); overflow-y:auto; display:flex;flex-direction:column;align-items:center;justify-content:safe center;padding:30px;box-shadow:0 15px 40px rgba(0,0,0,0.4);}
+.card-face::-webkit-scrollbar { width: 6px; }
+.card-face::-webkit-scrollbar-track { background: transparent; }
+.card-face::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+.card-face::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+.card-face-label{position:absolute;top:20px;left:24px;font-size:10px;font-weight:800;letter-spacing:2px;color:var(--muted);opacity:0.4;text-transform:uppercase;}
+.card-hint{position:absolute;bottom:24px;font-size:11px;color:var(--muted);font-weight:700;opacity:0.5;letter-spacing:1px;text-transform:uppercase;}
+.card-front{background:linear-gradient(145deg, var(--surface), var(--surface2));}
 .card-back{background:var(--surface2);transform:rotateY(180deg);border-color:var(--accent);}
-.card-text{font-family:var(--font-brand);font-size:clamp(28px, 8vw, 48px);font-weight:900;text-align:center;line-height:1.1;letter-spacing:-1px;}
+.card-text{font-family:var(--font-brand);font-size:clamp(20px, 8vw, 44px);font-weight:900;text-align:center;line-height:1.2;letter-spacing:-1px;word-break:break-word;max-width:100%;}
 
-.grade-row{margin-top:24px;animation:fadeUp .3s ease;}
-.grade-label{text-align:center;font-size:13px;color:var(--muted);margin-bottom:16px;font-weight:600;}
+.grade-row{margin-top:30px;animation:fadeUp .3s ease;width:100%;max-width:500px;margin-left:auto;margin-right:auto;}
+.grade-label{text-align:center;font-size:13px;color:var(--muted);margin-bottom:18px;font-weight:600;letter-spacing:0.5px;}
 .grade-btns{display:flex;gap:12px;}
-.grade-btn{flex:1;padding:16px;border-radius:16px;border:1px solid var(--border);background:var(--surface);font-family:var(--font-brand);font-size:16px;font-weight:800;cursor:pointer;transition:all .2s;}
+.grade-btn{flex:1;padding:16px 12px;border-radius:18px;border:1px solid var(--border);background:var(--surface);font-family:var(--font-brand);font-size:15px;font-weight:800;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:6px;}
 .grade-btn.easy{color:var(--easy);border-color:var(--easy);background:rgba(0,209,160,0.05);}
-.grade-btn.easy:hover{background:var(--easy);color:#000;}
+.grade-btn.easy:hover{background:var(--easy);color:#000;transform:translateY(-2px);}
 .grade-btn.medium{color:var(--medium);border-color:var(--medium);background:rgba(255,204,102,0.05);}
-.grade-btn.medium:hover{background:var(--medium);color:#000;}
+.grade-btn.medium:hover{background:var(--medium);color:#000;transform:translateY(-2px);}
 .grade-btn.hard{color:var(--hard);border-color:var(--hard);background:rgba(255,118,117,0.05);}
-.grade-btn.hard:hover{background:var(--hard);color:#000;}
+.grade-btn.hard:hover{background:var(--hard);color:#000;transform:translateY(-2px);}
 
-.progress{margin-bottom:24px;}
-.progress-meta{display:flex;justify-content:space-between;margin-bottom:8px;}
-.progress-text{font-size:13px;color:var(--muted);font-weight:600;}
-.progress-pct{font-size:13px;color:var(--accent);font-weight:800;}
-.progress-bar{height:6px;background:var(--surface2);border-radius:99px;overflow:hidden;}
-.progress-fill{height:100%;background:var(--accent);border-radius:99px;transition:width .4s ease;}
-.honesty-note{text-align:center;font-size:12px;color:var(--muted);margin-top:16px;opacity:0.6;}
+.progress{margin-bottom:28px;max-width:500px;margin-left:auto;margin-right:auto;}
+.progress-meta{display:flex;justify-content:space-between;margin-bottom:10px;align-items:baseline;}
+.progress-text{font-size:12px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:0.5px;}
+.progress-pct{font-size:14px;color:var(--accent);font-weight:900;font-family:var(--font-brand);}
+.progress-bar{height:8px;background:var(--surface2);border-radius:99px;overflow:hidden;border:1px solid var(--border);}
+.progress-fill{height:100%;background:var(--accent);border-radius:99px;transition:width .6s cubic-bezier(0.34, 1.56, 0.64, 1);}
+.honesty-note{text-align:center;font-size:11px;color:var(--muted);margin-top:24px;opacity:0.5;font-weight:500;}
 
-.done-banner{position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;gap:16px;background:var(--surface);padding:60px 40px;border-radius:30px;border:1px solid var(--border);box-shadow:0 20px 50px rgba(0,0,0,0.3);overflow:hidden;}
-.done-banner.highlighted .done-title,.done-banner.highlighted .done-sub,.done-banner.highlighted .done-actions{position:relative;z-index:2;}
-.done-title{font-family:var(--font-brand);font-size:26px;font-weight:900;line-height:1.2;color:var(--text);text-shadow:0 2px 10px rgba(0,0,0,0.5);}
-.done-sub{color:var(--muted);font-weight:600;font-size:14px;letter-spacing:1px;text-transform:uppercase;text-shadow:0 2px 10px rgba(0,0,0,0.5);}
-.done-actions{display:flex;gap:12px;justify-content:center;width:100%;margin-top:8px;}
-.medium-btn{width:auto;min-width:160px;padding:14px 24px;font-size:16px;border-radius:14px;}
+.done-banner{position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;gap:20px;background:var(--surface);padding:60px 30px;border-radius:32px;border:1px solid var(--border);box-shadow:0 20px 60px rgba(0,0,0,0.4);max-width:500px;margin:20px auto;}
+.done-title{font-family:var(--font-brand);font-size:24px;font-weight:900;line-height:1.2;color:var(--text);}
+.done-sub{color:var(--muted);font-weight:700;font-size:12px;letter-spacing:2px;text-transform:uppercase;}
+.done-actions{display:flex;gap:12px;justify-content:center;width:100%;margin-top:10px;flex-wrap:wrap;}
+.medium-btn{flex:1;min-width:140px;padding:16px 20px;font-size:16px;border-radius:16px;}
 
-.bottom-nav{display:none;position:fixed;bottom:0;left:0;right:0;z-index:90;background:rgba(11,11,20,0.9);backdrop-filter:blur(20px);border-top:1px solid var(--border);padding:16px 16px 32px;gap:12px;}
+.bottom-nav{display:none;position:fixed;bottom:0;left:0;right:0;z-index:90;background:rgba(18,18,34,0.95);backdrop-filter:blur(24px);border-top:1px solid var(--border);padding:12px 16px env(safe-area-inset-bottom, 24px);gap:10px;box-shadow:0 -10px 40px rgba(0,0,0,0.3);}
+.bottom-nav .nav-btn{flex:1;padding:12px;font-size:13px;}
+
+@media(max-width:768px){
+  .main{padding-top:24px;padding-bottom:140px;}
+  .stats-bar{grid-template-columns:1fr 1fr;}
+  .inputs-row{grid-template-columns:1fr;}
+}
 
 @media(max-width:600px){
+  .header{height:64px;padding:0 16px;}
+  .logo{font-size:22px;}
+  .section-title{font-size:20px;margin-bottom:16px;}
   .bottom-nav{display:flex;}
   .header-nav{display:none;}
-  .main{padding-bottom:120px;}
-  .inputs-row{grid-template-columns:1fr;}
-  .stat{padding:16px;}
+  .form{padding:16px;margin-bottom:32px;}
+  .add-btn{font-size:16px;padding:14px;}
+  .grade-btn{font-size:14px;padding:14px 8px;}
+  .card-face{padding:24px;}
+  .card{min-height:280px;}
+  .done-banner{padding:40px 24px;}
 }
+
+@media(max-width:400px){
+  .stats-bar{grid-template-columns:1fr;}
+  .grade-btns{gap:8px;}
+  .grade-btn{font-size:13px;padding:12px 4px;}
+  .deck-content{gap:6px;}
+  .deck-front,.deck-back{font-size:13px;}
+}
+\`;
 `;
