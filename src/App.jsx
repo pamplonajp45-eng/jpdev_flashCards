@@ -7,14 +7,6 @@ import resetSound from "./assets/when reset and study again clicked.mp3";
 import successIllu from "./assets/watercolor-chinese-style-illustration/7947569.jpg";
 import Auth from "./assets/components/Auth";
 
-function loadCardsLocal() {
-  try {
-    return JSON.parse(localStorage.getItem("jpdeck_cards")) || [];
-  } catch {
-    return [];
-  }
-}
-
 function Flashcard({ card, onGrade }) {
   const [flipped, setFlipped] = useState(false);
   return (
@@ -67,7 +59,7 @@ function Flashcard({ card, onGrade }) {
 export default function JpDeck() {
   const [autoFlip, setAutoFlip] = useState(false);
   const [session, setSession] = useState(null);
-  const [cards, setCards] = useState(loadCardsLocal);
+  const [cards, setCards] = useState([]);
   const [section, setSection] = useState("add");
   const [front, setFront] = useState("");
   const [back, setBack] = useState("");
@@ -77,6 +69,7 @@ export default function JpDeck() {
   const [isImporting, setIsImporting] = useState(false);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [showBulkAdd, setShowBulkAdd] = useState(false);
+  const [sessionStarted, setSessionStarted] = useState(false);
   const [bulkText, setBulkText] = useState("");
 
   useEffect(() => {
@@ -90,11 +83,6 @@ export default function JpDeck() {
     });
     return () => subscription.unsubscribe();
   }, []);
-
-  useEffect(() => {
-    if (!session) return;
-    // ...
-  }, [session]);
 
   useEffect(() => {
     if (!session) return;
@@ -125,13 +113,19 @@ export default function JpDeck() {
   }, [session]);
 
   useEffect(() => {
-    if (section === "study" && studyQueue.length === 0 && !sessionDone) {
-      const queue = cards.filter((c) => c.grade !== "easy");
+    if (section !== "study") {
+      setSessionStarted(false);
+      return;
+    }
+    if (!sessionStarted && !sessionDone) {
+      const today = new Date().toISOString().split("T")[0];
+      const queue = cards.filter((c) => !c.due_date || c.due_date <= today);
       setStudyQueue(queue);
       setStudyIndex(0);
       setSessionDone(queue.length === 0);
+      setSessionStarted(true);
     }
-  }, [section]);
+  }, [section, sessionStarted, sessionDone]);
 
   useEffect(() => {
     if (sessionDone && section === "study" && cards.length > 0) {
@@ -154,7 +148,7 @@ export default function JpDeck() {
       front: front.trim(),
       back: back.trim(),
       grade: null,
-      user_id: session.user.id, // ✅ scoped to user
+      user_id: session.user.id,
     };
 
     const tempId = Date.now();
@@ -166,8 +160,13 @@ export default function JpDeck() {
       .from("cards")
       .insert([newCard])
       .select();
+
     if (!error && data) {
-      setCards((prev) => prev.map((c) => (c.id === tempId ? data[0] : c)));
+      setCards((prev) => {
+        const tempExists = prev.some((c) => c.id === tempId);
+        if (!tempExists) return prev;
+        return prev.map((c) => (c.id === tempId ? data[0] : c));
+      });
     }
   }
 
@@ -183,48 +182,97 @@ export default function JpDeck() {
   }
 
   async function handleGrade(id, grade) {
-    setCards((prev) => prev.map((c) => (c.id === id ? { ...c, grade } : c)));
-    supabase.from("cards").update({ grade }).eq("id", id).then();
+    const card = studyQueue[studyIndex];
 
+    // SM-2 calculations
+    let newInterval = card.interval || 1;
+    let newEase = card.ease_factor || 2.5;
+
+    if (grade === "hard") {
+      // Forgot it — reset
+      newInterval = 1;
+      newEase = Math.max(1.3, newEase - 0.2);
+    } else if (grade === "medium") {
+      // Struggled — grow slowly
+      newInterval = Math.max(1, Math.round(newInterval * 1.2));
+      newEase = Math.max(1.3, newEase - 0.15);
+    } else if (grade === "easy") {
+      // Got it — grow normally
+      newInterval = Math.round(newInterval * newEase);
+      newEase = Math.min(3.0, newEase + 0.1);
+    }
+
+    // Calculate next due date
+    const due = new Date();
+    due.setDate(due.getDate() + newInterval);
+    const dueDateStr = due.toISOString().split("T")[0];
+
+    // Update local state
+    setCards((prev) =>
+      prev.map((c) =>
+        c.id === id
+          ? {
+              ...c,
+              interval: newInterval,
+              ease_factor: newEase,
+              due_date: dueDateStr,
+            }
+          : c,
+      ),
+    );
+
+    // Sync to Supabase
+    const { error } = await supabase
+      .from("cards")
+      .update({
+        interval: newInterval,
+        ease_factor: newEase,
+        due_date: dueDateStr,
+      })
+      .eq("id", id);
+
+    if (error) console.error("Grade sync failed:", error.message);
+
+    // Queue management
     if (grade === "hard" || grade === "medium") {
-      const card = studyQueue[studyIndex];
       const newQueue = [...studyQueue.slice(studyIndex + 1), card];
       setStudyQueue(newQueue);
       setStudyIndex(0);
       if (newQueue.length === 0) setSessionDone(true);
-
-      // auto-flip if 1 card remaining
       if (newQueue.length === 1) {
         setTimeout(() => setAutoFlip(true), 600);
       } else {
         setAutoFlip(false);
       }
     } else {
+      // Easy — card is done for today
+      if (grade === "easy") playSound(easySound);
       const newQueue = studyQueue.filter((c) => c.id !== id);
       setStudyQueue(newQueue);
       setStudyIndex(0);
-      if (grade === "easy") playSound(easySound);
       if (newQueue.length === 0) setSessionDone(true);
       setAutoFlip(false);
     }
   }
 
-  async function deleteCard(id) {
-    setCards((prev) => prev.filter((c) => c.id !== id));
-    await supabase.from("cards").delete().eq("id", id);
-  }
-
   async function resetGrades() {
-    const reset = cards.map((c) => ({ ...c, grade: null }));
+    const today = new Date().toISOString().split("T")[0];
+    const reset = cards.map((c) => ({
+      ...c,
+      interval: 1,
+      ease_factor: 2.5,
+      due_date: today,
+    }));
     setCards(reset);
     setStudyQueue(reset);
     setStudyIndex(0);
     setSessionDone(false);
+    setSessionStarted(false);
     playSound(resetSound);
     await supabase
       .from("cards")
-      .update({ grade: null })
-      .eq("user_id", session.user.id); // ✅ only reset own cards
+      .update({ interval: 1, ease_factor: 2.5, due_date: today })
+      .eq("user_id", session.user.id);
   }
 
   const handleNuclearReset = async () => {
@@ -264,6 +312,11 @@ export default function JpDeck() {
       setCards([]);
       if (section === "study") setSection("add");
     }
+  }
+
+  async function deleteCard(id) {
+    setCards((prev) => prev.filter((c) => c.id !== id));
+    await supabase.from("cards").delete().eq("id", id);
   }
 
   async function handleBulkAdd() {
@@ -358,8 +411,10 @@ export default function JpDeck() {
   }
 
   const currentCard = studyQueue[studyIndex];
-  const easyCount = cards.filter((c) => c.grade === "easy").length;
-  const pct = cards.length ? Math.round((easyCount / cards.length) * 100) : 0;
+  const today = new Date().toISOString().split("T")[0];
+  const dueCount = cards.filter(
+    (c) => !c.due_date || c.due_date <= today,
+  ).length;
 
   // ── Guard: show auth screen if not logged in
   if (!session) return <Auth onLogin={(s) => setSession(s)} />;
@@ -536,19 +591,29 @@ export default function JpDeck() {
                   </div>
                   <div className="stat">
                     <div className="stat-num" style={{ color: "var(--easy)" }}>
-                      {easyCount}
+                      {dueCount}
                     </div>
-                    <div className="stat-label">Mastered</div>
+                    <div className="stat-label">Due Today</div>
                   </div>
                   <div className="stat">
-                    <div className="stat-num" style={{ color: "var(--hard)" }}>
-                      {cards.filter((c) => c.grade === "hard").length}
+                    <div
+                      className="stat-num"
+                      style={{ color: "var(--medium)" }}
+                    >
+                      {
+                        cards.filter(
+                          (c) => c.interval > 1 && c.due_date > today,
+                        ).length
+                      }
                     </div>
-                    <div className="stat-label">Hard</div>
+                    <div className="stat-label">Learning</div>
                   </div>
                   <div className="stat">
                     <div className="stat-num">
-                      {cards.filter((c) => !c.grade).length}
+                      {
+                        cards.filter((c) => !c.due_date || c.interval === 1)
+                          .length
+                      }
                     </div>
                     <div className="stat-label">New</div>
                   </div>
@@ -594,9 +659,9 @@ export default function JpDeck() {
                         <span className="deck-back">{c.back}</span>
                       </div>
                       <div className="deck-right">
-                        {c.grade && (
-                          <span className={`grade-pill ${c.grade}`}>
-                            {c.grade}
+                        {c.due_date && c.due_date > today && (
+                          <span className="grade-pill easy">
+                            📅 {c.due_date}
                           </span>
                         )}
                         <button
@@ -625,7 +690,7 @@ export default function JpDeck() {
                     <div className="progress-meta">
                       <span className="progress-text">
                         {studyQueue.length} remaining ·{" "}
-                        {cards.length - studyQueue.length} mastered
+                        {cards.length - studyQueue.length} done
                       </span>
                       <span className="progress-pct">
                         {cards.length
@@ -663,7 +728,8 @@ export default function JpDeck() {
                     Don't forget to take breaks, CONGRATS!
                   </h3>
                   <p className="done-sub">
-                    {easyCount} of {cards.length} cards mastered
+                    {cards.length - dueCount} of {cards.length} cards reviewed
+                    today
                   </p>
                   <div className="done-actions">
                     <button
