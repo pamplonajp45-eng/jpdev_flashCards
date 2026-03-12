@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { supabase } from "./lib/supabase";
 import { getJapaneseMeaning, processBulkAI } from "./lib/gemini";
 import { loadLessonFromExcel } from "./lib/excelLoader";
@@ -71,6 +71,11 @@ export default function JpDeck() {
   const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [sessionStarted, setSessionStarted] = useState(false);
   const [bulkText, setBulkText] = useState("");
+  const [deckFilter, setDeckFilter] = useState("all");
+  const deckRef = useRef(null);
+  const dueRef = useRef(null);
+  const learningRef = useRef(null);
+  const newRef = useRef(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -184,7 +189,6 @@ export default function JpDeck() {
   async function handleGrade(id, grade) {
     const card = studyQueue[studyIndex];
 
-    // SM-2 calculations
     let newInterval = card.interval || 1;
     let newEase = card.ease_factor || 2.5;
 
@@ -212,11 +216,11 @@ export default function JpDeck() {
       prev.map((c) =>
         c.id === id
           ? {
-            ...c,
-            interval: newInterval,
-            ease_factor: newEase,
-            due_date: dueDateStr,
-          }
+              ...c,
+              interval: newInterval,
+              ease_factor: newEase,
+              due_date: dueDateStr,
+            }
           : c,
       ),
     );
@@ -405,7 +409,11 @@ export default function JpDeck() {
   }
 
   async function handleLessonGenerate(lessonFile, lessonName) {
-    if (!window.confirm(`Are you sure you want to generate ${lessonName} flashcards? This will use the pre-defined vocabulary from the excel file.`)) {
+    if (
+      !window.confirm(
+        `Are you sure you want to generate ${lessonName} flashcards? This will use the pre-defined vocabulary from the excel file.`,
+      )
+    ) {
       return;
     }
 
@@ -429,9 +437,13 @@ export default function JpDeck() {
 
       if (!error && data) {
         setCards((prev) => [...data, ...prev]);
-        alert(`Successfully generated ${lessonCards.length} cards for ${lessonName}!`);
+        alert(
+          `Successfully generated ${lessonCards.length} cards for ${lessonName}!`,
+        );
       } else {
-        alert("Error saving lesson cards: " + (error?.message || "Unknown error"));
+        alert(
+          "Error saving lesson cards: " + (error?.message || "Unknown error"),
+        );
       }
     } catch (e) {
       console.error(e);
@@ -506,21 +518,40 @@ export default function JpDeck() {
         <main className="main">
           {section === "add" && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px", gap: "10px", flexWrap: "wrap" }}>
-                <h2 className="section-title" style={{ margin: 0 }}>Add a Card</h2>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "24px",
+                  gap: "10px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <h2 className="section-title" style={{ margin: 0 }}>
+                  Add a Card
+                </h2>
                 <div style={{ display: "flex", gap: "8px" }}>
-                  <select 
-                    className="nav-btn" 
+                  <select
+                    className="nav-btn"
                     onChange={(e) => {
                       if (e.target.value) {
-                        handleLessonGenerate(e.target.value, e.target.options[e.target.selectedIndex].text);
+                        handleLessonGenerate(
+                          e.target.value,
+                          e.target.options[e.target.selectedIndex].text,
+                        );
                         e.target.value = ""; // reset
                       }
                     }}
-                    style={{ background: "var(--surface2)", padding: "10px 15px" }}
+                    style={{
+                      background: "var(--surface2)",
+                      padding: "10px 15px",
+                    }}
                   >
                     <option value="">📚 Select Lesson</option>
-                    <option value="minna_nihongo_lesson1_v2 (1).xlsx">Minna no Nihongo Lesson 1</option>
+                    <option value="minna_nihongo_lesson1_v2 (1).xlsx">
+                      Minna no Nihongo Lesson 1
+                    </option>
                   </select>
                 </div>
               </div>
@@ -620,9 +651,7 @@ export default function JpDeck() {
                           fontWeight: "800",
                         }}
                       >
-                        {isAiLoading
-                          ? "jp DECK is Thinking..."
-                          : "Auto Fill"}
+                        {isAiLoading ? "jp DECK is Thinking..." : "Auto Fill"}
                       </button>
                     </div>
                   </div>
@@ -631,35 +660,64 @@ export default function JpDeck() {
 
               {cards.length > 0 && (
                 <div className="stats-bar">
-                  <div className="stat">
+                  <div
+                    className={`stat ${deckFilter === "all" ? "active" : ""}`}
+                    onClick={() => {
+                      setDeckFilter("all");
+                      deckRef.current?.scrollIntoView({ behavior: "smooth" });
+                    }}
+                    style={{ cursor: "pointer" }}
+                  >
                     <div className="stat-num">{cards.length}</div>
                     <div className="stat-label">Total</div>
                   </div>
-                  <div className="stat">
+                  <div
+                    className={`stat ${deckFilter === "due" ? "active" : ""}`}
+                    onClick={() => {
+                      setDeckFilter("due");
+                      dueRef.current?.scrollIntoView({ behavior: "smooth" });
+                    }}
+                    style={{ cursor: "pointer" }}
+                  >
                     <div className="stat-num" style={{ color: "var(--easy)" }}>
-                      {dueCount}
+                      {
+                        cards.filter((c) => c.due_date && c.due_date <= today)
+                          .length
+                      }
                     </div>
                     <div className="stat-label">Due Today</div>
                   </div>
-                  <div className="stat">
+                  <div
+                    className={`stat ${deckFilter === "learning" ? "active" : ""}`}
+                    onClick={() => {
+                      setDeckFilter("learning");
+                      learningRef.current?.scrollIntoView({
+                        behavior: "smooth",
+                      });
+                    }}
+                    style={{ cursor: "pointer" }}
+                  >
                     <div
                       className="stat-num"
                       style={{ color: "var(--medium)" }}
                     >
                       {
-                        cards.filter(
-                          (c) => c.interval > 1 && c.due_date > today,
-                        ).length
+                        cards.filter((c) => c.due_date && c.due_date > today)
+                          .length
                       }
                     </div>
                     <div className="stat-label">Learning</div>
                   </div>
-                  <div className="stat">
+                  <div
+                    className={`stat ${deckFilter === "new" ? "active" : ""}`}
+                    onClick={() => {
+                      setDeckFilter("new");
+                      newRef.current?.scrollIntoView({ behavior: "smooth" });
+                    }}
+                    style={{ cursor: "pointer" }}
+                  >
                     <div className="stat-num">
-                      {
-                        cards.filter((c) => !c.due_date || c.interval === 1)
-                          .length
-                      }
+                      {cards.filter((c) => !c.due_date).length}
                     </div>
                     <div className="stat-label">New</div>
                   </div>
@@ -674,8 +732,17 @@ export default function JpDeck() {
                   marginBottom: "16px",
                 }}
               >
-                <h2 className="section-title" style={{ margin: 0 }}>
-                  Your Deck
+                <h2
+                  className="section-title"
+                  style={{ margin: 0 }}
+                  ref={deckRef}
+                >
+                  Your Deck{" "}
+                  {deckFilter !== "all" && (
+                    <span style={{ fontSize: "14px", opacity: 0.6 }}>
+                      (Filtering: {deckFilter})
+                    </span>
+                  )}
                 </h2>
                 {cards.length > 0 && (
                   <button
@@ -696,29 +763,166 @@ export default function JpDeck() {
               {cards.length === 0 ? (
                 <p className="empty">No cards yet — add some above!</p>
               ) : (
-                <div className="deck-list">
-                  {cards.map((c) => (
-                    <div key={c.id} className="deck-item">
-                      <div className="deck-content">
-                        <span className="deck-front">{c.front}</span>
-                        <span className="deck-arrow">→</span>
-                        <span className="deck-back">{c.back}</span>
-                      </div>
-                      <div className="deck-right">
-                        {c.due_date && c.due_date > today && (
-                          <span className="grade-pill easy">
-                            📅 {c.due_date}
-                          </span>
+                <div
+                  className="deck-sections"
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "24px",
+                  }}
+                >
+                  {/* Due Section */}
+                  {(deckFilter === "all" || deckFilter === "due") && (
+                    <div ref={dueRef}>
+                      <h3
+                        className="section-subtitle"
+                        style={{
+                          fontSize: "16px",
+                          marginBottom: "12px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                        }}
+                      >
+                        <span style={{ color: "var(--easy)" }}>📅</span> Due
+                        Today
+                        <span className="count-pill">
+                          {
+                            cards.filter(
+                              (c) => c.due_date && c.due_date <= today,
+                            ).length
+                          }
+                        </span>
+                      </h3>
+                      <div className="deck-list">
+                        {cards.filter((c) => c.due_date && c.due_date <= today)
+                          .length > 0 ? (
+                          cards
+                            .filter((c) => c.due_date && c.due_date <= today)
+                            .map((c) => (
+                              <div key={c.id} className="deck-item">
+                                <div className="deck-content">
+                                  <span className="deck-front">{c.front}</span>
+                                  <span className="deck-arrow">→</span>
+                                  <span className="deck-back">{c.back}</span>
+                                </div>
+                                <div className="deck-right">
+                                  <button
+                                    className="del-btn"
+                                    onClick={() => deleteCard(c.id)}
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                        ) : (
+                          <p className="empty-sub">No cards due today!</p>
                         )}
-                        <button
-                          className="del-btn"
-                          onClick={() => deleteCard(c.id)}
-                        >
-                          ✕
-                        </button>
                       </div>
                     </div>
-                  ))}
+                  )}
+
+                  {/* Learning Section */}
+                  {(deckFilter === "all" || deckFilter === "learning") && (
+                    <div ref={learningRef}>
+                      <h3
+                        className="section-subtitle"
+                        style={{
+                          fontSize: "16px",
+                          marginBottom: "12px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                        }}
+                      >
+                        <span style={{ color: "var(--medium)" }}>🟡</span>{" "}
+                        Learning
+                        <span className="count-pill">
+                          {
+                            cards.filter(
+                              (c) => c.due_date && c.due_date > today,
+                            ).length
+                          }
+                        </span>
+                      </h3>
+                      <div className="deck-list">
+                        {cards.filter((c) => c.due_date && c.due_date > today)
+                          .length > 0 ? (
+                          cards
+                            .filter((c) => c.due_date && c.due_date > today)
+                            .map((c) => (
+                              <div key={c.id} className="deck-item">
+                                <div className="deck-content">
+                                  <span className="deck-front">{c.front}</span>
+                                  <span className="deck-arrow">→</span>
+                                  <span className="deck-back">{c.back}</span>
+                                </div>
+                                <div className="deck-right">
+                                  <button
+                                    className="del-btn"
+                                    onClick={() => deleteCard(c.id)}
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                        ) : (
+                          <p className="empty-sub">No cards in learning yet!</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* New Section */}
+                  {(deckFilter === "all" || deckFilter === "new") && (
+                    <div ref={newRef}>
+                      <h3
+                        className="section-subtitle"
+                        style={{
+                          fontSize: "16px",
+                          marginBottom: "12px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                        }}
+                      >
+                        <span style={{ color: "var(--text)", opacity: 0.6 }}>
+                          🆕
+                        </span>{" "}
+                        New
+                        <span className="count-pill">
+                          {cards.filter((c) => !c.due_date).length}
+                        </span>
+                      </h3>
+                      <div className="deck-list">
+                        {cards.filter((c) => !c.due_date).length > 0 ? (
+                          cards
+                            .filter((c) => !c.due_date)
+                            .map((c) => (
+                              <div key={c.id} className="deck-item">
+                                <div className="deck-content">
+                                  <span className="deck-front">{c.front}</span>
+                                  <span className="deck-arrow">→</span>
+                                  <span className="deck-back">{c.back}</span>
+                                </div>
+                                <div className="deck-right">
+                                  <button
+                                    className="del-btn"
+                                    onClick={() => deleteCard(c.id)}
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                        ) : (
+                          <p className="empty-sub">No new cards!</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -741,10 +945,10 @@ export default function JpDeck() {
                       <span className="progress-pct">
                         {cards.length
                           ? Math.round(
-                            ((cards.length - studyQueue.length) /
-                              cards.length) *
-                            100,
-                          )
+                              ((cards.length - studyQueue.length) /
+                                cards.length) *
+                                100,
+                            )
                           : 0}
                         %
                       </span>
@@ -876,6 +1080,8 @@ input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);}
 .stat:hover{transform:translateY(-4px);}
 .stat-num{font-family:var(--font-brand);font-size:24px;font-weight:900;line-height:1;}
 .stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-top:6px;font-weight:700;}
+.count-pill{background:var(--surface2);color:var(--muted);padding:2px 8px;border-radius:20px;font-size:12px;font-weight:700;margin-left:8px;}
+.empty-sub{color:var(--muted);font-size:13px;padding:12px 0;opacity:0.6;}
 
 .deck-list{display:flex;flex-direction:column;gap:10px;}
 .deck-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-radius:16px;background:var(--surface);border:1px solid var(--border);transition:all .2s;}
