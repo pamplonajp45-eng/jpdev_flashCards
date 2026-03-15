@@ -102,15 +102,22 @@ export default function JpDeck() {
     if (section !== "study") { setSessionStarted(false); return; }
     if (!sessionStarted && !sessionDone) {
       const today = new Date().toISOString().split("T")[0];
-      
+
       let filteredCards = cards;
       if (studyDeckFilter !== "all") {
         filteredCards = cards.filter(c => getCardDeck(c.front) === studyDeckFilter);
       }
-      
+
       const queue = filteredCards.filter((c) => !c.due_date || c.due_date <= today);
+
+      // Fisher-Yates shuffle algorithm to randomize the study queue explicitly
+      for (let i = queue.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [queue[i], queue[j]] = [queue[j], queue[i]];
+      }
+
       setStudyQueue(queue); setStudyIndex(0); setSessionDone(queue.length === 0); setSessionStarted(true);
-      
+
       // Keep track of the actual total cards in the active deck to show realistic progress
       setStudyTotalCards(filteredCards.length);
     }
@@ -202,8 +209,8 @@ export default function JpDeck() {
 
     const { error } = await supabase.from("cards").delete().in("id", cardIds).eq("user_id", session.user.id);
     if (error) { alert("Error deleting deck: " + error.message); }
-    else { 
-      setCards(prev => prev.filter(c => !cardIds.includes(c.id))); 
+    else {
+      setCards(prev => prev.filter(c => !cardIds.includes(c.id)));
       if (studyDeckFilter === deckName) setStudyDeckFilter("all");
     }
   }
@@ -246,25 +253,25 @@ export default function JpDeck() {
     try {
       const lessonCards = await loadLessonFromExcel(lessonFile);
       if (lessonCards.length === 0) { alert("No cards found in the excel file."); return; }
-      
+
       const normalizeString = (str) => {
         if (!str) return "";
         // Remove all normal spaces, full-width Japanese spaces, and invisible characters
         return String(str).replace(/[\s\u3000]+/g, "").trim().toLowerCase();
       };
-      
+
       const existingFronts = new Set(cards.map(c => normalizeString(c.front)));
       const newCards = lessonCards.filter(c => !existingFronts.has(normalizeString(c.front)));
-      
-      if (newCards.length === 0) { 
-        alert(`Warning: The entire ${lessonName} lesson is already downloaded in your deck! No duplicates were added.`); 
-        return; 
+
+      if (newCards.length === 0) {
+        alert(`Warning: The entire ${lessonName} lesson is already downloaded in your deck! No duplicates were added.`);
+        return;
       }
 
       if (newCards.length < lessonCards.length) {
         const duplicates = lessonCards.length - newCards.length;
         if (!window.confirm(`Warning: ${duplicates} cards from this lesson are already in your deck. Do you want to download the remaining ${newCards.length} new cards?`)) {
-           return;
+          return;
         }
       }
 
@@ -339,7 +346,7 @@ export default function JpDeck() {
                     if (e.target.value) { handleLessonGenerate(e.target.value, e.target.options[e.target.selectedIndex].text); e.target.value = ""; }
                   }}
                 >
-                  <option value="">📚 Select Lesson</option>
+                  <option value="">📚 Add Lesson</option>
                   <optgroup label="Hiragana">
                     <option value="hiragana_chart.xlsx">Hiragana</option>
                   </optgroup>
@@ -428,8 +435,8 @@ export default function JpDeck() {
                             <span className="deck-stat-icon">{meta.icon}</span>
                             <span className="deck-stat-title">{deck.title}</span>
                             <span className="deck-stat-total">{deck.data.length}</span>
-                            <button 
-                              className="del-btn" 
+                            <button
+                              className="del-btn"
                               title="Delete Deck"
                               onClick={() => deleteDeck(deck.title)}
                               style={{ marginLeft: "8px", padding: "4px" }}
@@ -553,12 +560,12 @@ export default function JpDeck() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
                 <h2 className="section-title" style={{ margin: 0 }}>Study Session</h2>
                 {cards.length > 0 && (
-                  <select 
-                    className="lesson-select" 
-                    value={studyDeckFilter} 
+                  <select
+                    className="lesson-select"
+                    value={studyDeckFilter}
                     onChange={(e) => {
                       setStudyDeckFilter(e.target.value);
-                      setSessionStarted(false); 
+                      setSessionStarted(false);
                       setSessionDone(false);
                     }}
                   >
@@ -569,13 +576,13 @@ export default function JpDeck() {
                   </select>
                 )}
               </div>
-              
+
               {cards.length === 0 && <p className="empty">No cards yet — go add some first!</p>}
-              
+
               {cards.length > 0 && sessionDone && studyTotalCards > 0 && studyQueue.length === 0 && studyDeckFilter !== "all" && cards.filter(c => getCardDeck(c.front) === studyDeckFilter).length === 0 && (
-                 <p className="empty">You have no {studyDeckFilter} cards yet.</p>
+                <p className="empty">You have no {studyDeckFilter} cards yet.</p>
               )}
-              
+
               {cards.length > 0 && !sessionDone && currentCard && (
                 <>
                   <div className="progress">
